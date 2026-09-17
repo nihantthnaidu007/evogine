@@ -426,6 +426,27 @@ def _read_capped(path: str, limit: int) -> str:
     return data.decode("utf-8", "replace")
 
 
+# Environment variables passed through to the local candidate subprocess —
+# everything else is dropped (H1, v1 security review).
+_LOCAL_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+
+
+def _local_env() -> dict[str, str]:
+    """Build a minimal environment for the local candidate subprocess.
+
+    The local executor is not a security boundary, but it still must not hand
+    the candidate the loop process's secrets: a naive ``{**os.environ, ...}``
+    inherited everything, including ``ANTHROPIC_API_KEY`` during a live pilot
+    (H1, v1 security review). Pass through only what a CPython subprocess
+    needs to run — path lookups, home, locale, temp dir — plus the determinism
+    contract the Docker executor's container env already pins.
+    """
+    env = {name: os.environ[name] for name in _LOCAL_ENV_ALLOWLIST if name in os.environ}
+    env["PYTHONHASHSEED"] = "0"  # same determinism contract as the container
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
 class LocalSubprocessSandbox:
     """Plain local subprocess executor — **NOT a security boundary**.
 
@@ -438,6 +459,11 @@ class LocalSubprocessSandbox:
     A command spelled ``python ...`` is rewritten to ``sys.executable`` so the
     same command list works against both executors (the container provides its
     own ``python``; the host venv's is the only correct one locally).
+
+    The candidate subprocess receives a minimal allowlisted environment
+    (``_local_env()``: PATH, HOME, LANG, LC_ALL, TMPDIR plus the determinism
+    pins) — never the loop process's full environ, which carries secrets such
+    as ``ANTHROPIC_API_KEY`` during a live pilot (H1, v1 security review).
     """
 
     def run(
@@ -452,11 +478,7 @@ class LocalSubprocessSandbox:
         workdir = tempfile.mkdtemp(prefix="evogine_local_sbx_")
         try:
             _stage_files(workdir, files)
-            env = {
-                **os.environ,
-                "PYTHONHASHSEED": "0",  # same determinism contract as the container
-                "PYTHONDONTWRITEBYTECODE": "1",
-            }
+            env = _local_env()
             start = time.monotonic()
             proc = subprocess.Popen(
                 command,
