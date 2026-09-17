@@ -171,8 +171,17 @@ def run(
     A warm arm without an engine raises rather than silently degrading into
     a second cold arm.
     """
-    if "warm" in config.arms and engine is None:
-        raise ValueError("the warm arm requires an engine; pass one or drop 'warm' from arms")
+    # Resolve each arm's retriever up front so the warm guard and the type
+    # narrowing live in one place: a warm arm without an engine raises here,
+    # and the loop never sees an Optional.
+    null_engine = NullEngine()
+    retrievers: dict[str, Retriever] = dict.fromkeys(config.arms, null_engine)
+    if "warm" in retrievers:
+        if engine is None:
+            raise ValueError(
+                "the warm arm requires an engine; pass one or drop 'warm' from arms"
+            )
+        retrievers["warm"] = engine
     gate = gate or PropertiesGate()
     writer = RolloutWriter(Path(config.runs_dir) / "rollouts.jsonl")
 
@@ -197,7 +206,7 @@ def run(
 
     arms_report: dict[str, object] = {}
     for arm in config.arms:
-        retriever = engine if arm == "warm" else NullEngine()
+        retriever = retrievers[arm]
         records = retriever.retrieve(_task_context(task), k=config.retrieval_k)
         messages = build_builder_messages(task, records)
         candidates: list[dict[str, object]] = []

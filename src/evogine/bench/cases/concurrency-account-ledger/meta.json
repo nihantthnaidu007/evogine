@@ -1,0 +1,6 @@
+{
+  "case_id": "concurrency-account-ledger",
+  "decay_axis": "concurrent-writes",
+  "difficulty": "hard",
+  "description": "A replica folds modeled concurrent writes by sequence number; folding in arrival order loses the durable ordering contract."
+}

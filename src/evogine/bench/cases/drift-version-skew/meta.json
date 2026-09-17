@@ -1,0 +1,6 @@
+{
+  "case_id": "drift-version-skew",
+  "decay_axis": "integration-drift",
+  "difficulty": "hard",
+  "description": "A client/server pair must share one wire schema; porting the pair from separate v1 versions silently breaks cross-version payloads."
+}

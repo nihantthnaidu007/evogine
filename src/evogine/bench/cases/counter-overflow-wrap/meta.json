@@ -1,0 +1,6 @@
+{
+  "case_id": "counter-overflow-wrap",
+  "decay_axis": "overflow",
+  "difficulty": "medium",
+  "description": "An epoch-tagged id source with a bounded counter must saturate and report exhaustion, not wrap and reuse ids."
+}

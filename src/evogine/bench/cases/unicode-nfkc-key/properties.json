@@ -1,0 +1,62 @@
+{
+  "case_id": "unicode-nfkc-key",
+  "entry": "display_key",
+  "properties": [
+    {
+      "id": "compatibility-forms-collapse",
+      "kind": "golden_io",
+      "rows": [
+        {
+          "args": [
+            [
+              "Ｆｕｌｌｗｉｄｔｈ",
+              "ＩＤ"
+            ]
+          ],
+          "kwargs": {},
+          "expected": "fullwidth·id"
+        },
+        {
+          "args": [
+            [
+              "ﬁnance",
+              "Dept"
+            ]
+          ],
+          "kwargs": {},
+          "expected": "finance·dept"
+        },
+        {
+          "args": [
+            [
+              "Ａｄａ",
+              "LOVELACE"
+            ]
+          ],
+          "kwargs": {},
+          "expected": "ada·lovelace"
+        },
+        {
+          "args": [
+            [
+              "ⅸ",
+              "nine"
+            ]
+          ],
+          "kwargs": {},
+          "expected": "ix·nine"
+        },
+        {
+          "args": [
+            [
+              "Ada",
+              "Lovelace"
+            ]
+          ],
+          "kwargs": {},
+          "expected": "ada·lovelace"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "case_id": "audit-ring-drop",
+  "entry": "audit_append",
+  "properties": [
+    {
+      "id": "full-buffer-refuses",
+      "kind": "golden_io",
+      "rows": [
+        {
+          "args": [
+            [
+              "a"
+            ],
+            "b",
+            3
+          ],
+          "kwargs": {},
+          "expected": {
+            "kept": 2,
+            "dropped": 0
+          }
+        },
+        {
+          "args": [
+            [
+              "a",
+              "b"
+            ],
+            "c",
+            3
+          ],
+          "kwargs": {},
+          "expected": {
+            "kept": 3,
+            "dropped": 0
+          }
+        },
+        {
+          "args": [
+            [
+              "a",
+              "b",
+              "c"
+            ],
+            "d",
+            3
+          ],
+          "kwargs": {},
+          "raises": "OverflowError"
+        },
+        {
+          "args": [
+            [
+              "x"
+            ],
+            "y",
+            1
+          ],
+          "kwargs": {},
+          "raises": "OverflowError"
+        }
+      ]
+    }
+  ]
+}

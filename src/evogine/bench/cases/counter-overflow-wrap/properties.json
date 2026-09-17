@@ -1,0 +1,70 @@
+{
+  "case_id": "counter-overflow-wrap",
+  "entry": "IdSource",
+  "properties": [
+    {
+      "id": "exhaustion-reports-no-ids",
+      "kind": "scenario",
+      "rows": [
+        {
+          "construct": {
+            "args": [
+              7
+            ],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "skip",
+              "args": [
+                1048576
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "next_id",
+              "args": [],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "counter",
+              "args": [],
+              "kwargs": {},
+              "expected": 1048575
+            }
+          ]
+        },
+        {
+          "construct": {
+            "args": [
+              7
+            ],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "next_id",
+              "args": [],
+              "kwargs": {},
+              "expected": 7340032
+            },
+            {
+              "method": "next_id",
+              "args": [],
+              "kwargs": {},
+              "expected": 7340033
+            },
+            {
+              "method": "counter",
+              "args": [],
+              "kwargs": {},
+              "expected": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

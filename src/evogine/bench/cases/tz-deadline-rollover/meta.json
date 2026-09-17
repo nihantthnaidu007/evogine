@@ -1,0 +1,6 @@
+{
+  "case_id": "tz-deadline-rollover",
+  "decay_axis": "timezone-math",
+  "difficulty": "medium",
+  "description": "Convert a UTC timestamp to the calendar date in a fixed-minute-offset locale; sub-hour offsets near midnight flip the date."
+}

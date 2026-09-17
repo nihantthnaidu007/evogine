@@ -1,0 +1,60 @@
+{
+  "case_id": "billing-day-offset",
+  "entry": "billing_day",
+  "properties": [
+    {
+      "id": "month-end-clamping",
+      "kind": "golden_io",
+      "rows": [
+        {
+          "args": [
+            "2026-01-31",
+            1
+          ],
+          "kwargs": {},
+          "expected": "2026-02-28"
+        },
+        {
+          "args": [
+            "2024-01-31",
+            1
+          ],
+          "kwargs": {},
+          "expected": "2024-02-29"
+        },
+        {
+          "args": [
+            "2026-03-31",
+            -1
+          ],
+          "kwargs": {},
+          "expected": "2026-02-28"
+        },
+        {
+          "args": [
+            "2026-08-31",
+            6
+          ],
+          "kwargs": {},
+          "expected": "2027-02-28"
+        },
+        {
+          "args": [
+            "2026-10-31",
+            2
+          ],
+          "kwargs": {},
+          "expected": "2026-12-31"
+        },
+        {
+          "args": [
+            "2025-05-31",
+            12
+          ],
+          "kwargs": {},
+          "expected": "2026-05-31"
+        }
+      ]
+    }
+  ]
+}
