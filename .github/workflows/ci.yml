@@ -2,6 +2,16 @@ name: CI
 
 # Lint (ruff) then test (pytest) on Python 3.12, for pushes to main and all
 # pull requests. No secrets: the scaffold suite makes no live API calls.
+#
+# lint-and-test runs only the local subprocess executor: the DockerSandbox
+# tests (test_docker_* in tests/test_sandbox.py and tests/test_memory_gate.py)
+# skip when the sandbox image is absent. The docker-gates job closes that
+# coverage gap — GitHub-hosted runners provide Docker natively (no service
+# container, no secrets, no artifacts): it builds the pinned sandbox image
+# (the same one-time build documented in src/evogine/gates/sandbox.py), asserts
+# the tests' literal skipif condition is satisfied, and runs exactly the
+# Docker-gated tests. No secrets: the sandbox has no network and the suite
+# makes no live API calls.
 on:
   push:
     branches: [main]
@@ -27,3 +37,43 @@ jobs:
 
       - name: Pytest
         run: pytest -q
+
+  docker-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      # Pinned base (python:3.13-slim@sha256:c33f...4f, multi-arch manifest
+      # digest) resolves to the amd64 image on x86_64 runners, so the CI-built
+      # image matches the one developers build locally.
+      - name: Build the pinned sandbox image
+        run: docker build -f docker/Dockerfile.sandbox -t evogine-sandbox:py313 docker/
+
+      # The Docker-gated tests skip iff `docker image inspect
+      # evogine-sandbox:py313` fails. Asserting that exact condition here
+      # means a green job cannot be a silent skip: if the image were missing,
+      # the job fails here instead of passing vacuously.
+      - name: Confirm the tests' skipif condition is satisfied
+        run: docker image inspect evogine-sandbox:py313 > /dev/null
+
+      # -k docker selects exactly the five Docker-gated tests (test_docker_*
+      # in tests/test_sandbox.py and tests/test_memory_gate.py); the rest of
+      # the suite stays with lint-and-test. The grep guard fails the job if
+      # any selected test is skipped anyway.
+      - name: Run the Docker-gated gate tests
+        run: |
+          set -o pipefail
+          pytest -k docker -q -rs 2>&1 | tee /tmp/pytest-docker.log
+          if grep -Eq '[0-9]+ skipped' /tmp/pytest-docker.log; then
+            echo "::error::Docker-gated tests were skipped despite the built sandbox image — failing the job"
+            exit 1
+          fi
