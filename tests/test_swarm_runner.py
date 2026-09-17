@@ -109,6 +109,36 @@ class FakeModel:
                 self.active -= 1
 
 
+class FlakyModel(FakeModel):
+    """Scripted ModelClient whose Nth call for one role raises.
+
+    Stands in for a model-client/API fault: the real adapter propagates SDK
+    errors unwrapped, so raising here surfaces at the role-call boundary
+    exactly as a live outage would.
+    """
+
+    def __init__(self, *, role: str, fail_on: int | None = None, fail_all: bool = False) -> None:
+        super().__init__()
+        self._role = role
+        self._fail_on = fail_on
+        self._fail_all = fail_all
+        self._role_calls = 0
+        self._flaky_lock = threading.Lock()
+
+    def generate(
+        self, *, messages: list[dict[str, str]], model_config: ModelConfig
+    ) -> ModelResponse:
+        with self._flaky_lock:
+            if model_config.model.endswith(self._role):
+                self._role_calls += 1
+                nth: int | None = self._role_calls
+            else:
+                nth = None
+        if nth is not None and (self._fail_all or nth == self._fail_on):
+            raise ConnectionError("simulated API outage")
+        return super().generate(messages=messages, model_config=model_config)
+
+
 @dataclass
 class FakeGate:
     """Scripted CandidateGate.
@@ -211,6 +241,20 @@ def read_rollouts(path: Path) -> list[dict]:
 def test_seed_derivation_matches_learn_0012() -> None:
     expected = hashlib.sha256(b"runswarm01|case_retries|0|1").hexdigest()[:8]
     assert derive_seed("runswarm01", "case_retries", 0, 1) == expected
+
+
+def test_seed_derivation_has_one_canonical_definition() -> None:
+    """The bench harness once carried a duplicate derivation with a longer
+    digest (16 hex chars vs 8); the unified definition is shared by both
+    surfaces and pins the recorded 8-hex format."""
+    from evogine import swarm
+    from evogine.bench.harness import derive_seed as harness_derive_seed
+
+    expected = hashlib.sha256(b"runswarm01|case_retries|0|1").hexdigest()[:8]
+    assert derive_seed("runswarm01", "case_retries", 0, 1) == expected
+    # Both public surfaces re-export exactly the canonical derivation.
+    assert harness_derive_seed is derive_seed
+    assert swarm.derive_seed is derive_seed
 
 
 def test_warm_run_retrieves_seeded_knowledge_and_retains_candidate(tmp_path: Path) -> None:
@@ -413,6 +457,136 @@ def test_unparseable_reflector_reply_is_recorded_not_landed(tmp_path: Path) -> N
     assert "learning proposal rejected" in reflector_record["failure_detail"]
     # Nothing beyond the 12 seeds landed in the store.
     assert len(list(engine.records_dir.glob("*.json"))) == 12
+
+
+# ------------------- model-client/API fault degradation (deferred piece 2)
+
+
+def test_builder_api_exception_degrades_one_candidate_and_run_continues(tmp_path: Path) -> None:
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="builder", fail_on=2)  # candidate (0, 1) of two crashes
+    report = run_task(make_task(), engine, fake, FakeGate(), make_config(tmp_path))
+
+    # The run completed and the healthy candidate was built, gated, retained.
+    assert report["retained"] == "candidate"
+    assert report["best"] is not None
+    assert (report["best"]["generation"], report["best"]["candidate_index"]) == (0, 0)
+
+    healthy, degraded = report["candidates"]
+    assert (healthy["generation"], healthy["candidate_index"]) == (0, 0)
+    assert healthy["verdict"] == "pass"
+    assert (degraded["generation"], degraded["candidate_index"]) == (0, 1)
+    # A degraded candidate is a typed failure — never a pass.
+    assert degraded["verdict"] == "fail"
+    assert degraded["properties_passed"] == 0
+    assert degraded["properties_total"] == 0
+    assert degraded["verifier_verdict"] == "unknown"
+
+    rollouts = read_rollouts(tmp_path / "runs" / "rollouts.jsonl")
+    degraded_record = next(
+        record
+        for record in rollouts
+        if record["stage"] == "candidate"
+        and (record["generation"], record["candidate_index"]) == (0, 1)
+    )
+    assert degraded_record["verdict"] == "fail"
+    assert degraded_record["failure_detail"] == (
+        "builder call failed: ConnectionError: simulated API outage"
+    )
+    assert degraded_record["prompt_messages"][0]["role"] == "system"
+    assert degraded_record["tokens"] == {"input_tokens": None, "output_tokens": None}
+    assert degraded_record["extracted_code"] == ""
+    # The degraded unit's verifier slot: a review that never ran is recorded
+    # as unknown, and no later candidate's review can be mispaired with it.
+    degraded_review = next(
+        record
+        for record in rollouts
+        if record["stage"] == "verifier"
+        and (record["generation"], record["candidate_index"]) == (0, 1)
+    )
+    assert degraded_review["verdict"] == "unknown"
+    assert degraded_review["prompt_messages"] == []
+
+
+def test_every_candidate_degrading_keeps_the_baseline(tmp_path: Path) -> None:
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="builder", fail_all=True)  # every builder call crashes
+    report = run_task(make_task(), engine, fake, FakeGate(), make_config(tmp_path))
+
+    assert report["retained"] == "baseline"
+    assert report["best"] is None
+    assert all(candidate["verdict"] == "fail" for candidate in report["candidates"])
+    # The run still completed: the reflector diagnosed the all-degraded run.
+    assert report["proposal"] is not None
+
+
+def test_verifier_api_exception_degrades_the_unit_even_when_the_gate_passed(
+    tmp_path: Path,
+) -> None:
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="verifier", fail_on=1)  # first candidate's review crashes
+    report = run_task(make_task(), engine, fake, FakeGate(), make_config(tmp_path))
+
+    degraded, healthy = report["candidates"]
+    # The gate passed the candidate, but no review was produced: fail-closed.
+    assert degraded["verdict"] == "fail"
+    assert degraded["verifier_verdict"] == "unknown"
+    assert healthy["verdict"] == "pass"
+    assert report["retained"] == "candidate"
+    assert report["best"] is not None
+    assert (report["best"]["generation"], report["best"]["candidate_index"]) == (0, 1)
+
+    rollouts = read_rollouts(tmp_path / "runs" / "rollouts.jsonl")
+    degraded_record = next(
+        record
+        for record in rollouts
+        if record["stage"] == "candidate"
+        and (record["generation"], record["candidate_index"]) == (0, 0)
+    )
+    assert degraded_record["failure_detail"] == (
+        "verifier review failed: ConnectionError: simulated API outage"
+    )
+    degraded_review = next(
+        record
+        for record in rollouts
+        if record["stage"] == "verifier"
+        and (record["generation"], record["candidate_index"]) == (0, 0)
+    )
+    assert degraded_review["verdict"] == "unknown"
+
+
+def test_parallel_pool_survives_a_degraded_builder(tmp_path: Path) -> None:
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="builder", fail_on=3)  # exactly one of four crashes
+    report = run_task(
+        make_task(),
+        engine,
+        fake,
+        FakeGate(),
+        make_config(tmp_path, max_parallel_builders=2, candidates_per_generation=4),
+    )
+
+    verdicts = [candidate["verdict"] for candidate in report["candidates"]]
+    assert verdicts.count("fail") == 1
+    assert verdicts.count("pass") == 3
+    assert report["retained"] == "candidate"
+
+
+def test_reflector_api_exception_is_recorded_not_fatal(tmp_path: Path) -> None:
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="reflector", fail_on=1)
+    fake.builder_reply = broken_reply  # every candidate fails, so the reflector runs
+    report = run_task(make_task(), engine, fake, FakeGate(), make_config(tmp_path))
+
+    assert report["retained"] == "baseline"
+    assert report["proposal"] is None  # the diagnosis crashed; nothing landed
+    rollouts = read_rollouts(tmp_path / "runs" / "rollouts.jsonl")
+    reflector_record = next(record for record in rollouts if record["stage"] == "reflector")
+    assert reflector_record["verdict"] == "fail"
+    assert reflector_record["failure_detail"] == (
+        "reflector call failed: ConnectionError: simulated API outage"
+    )
+    assert reflector_record["prompt_messages"][0]["role"] == "system"
 
 
 # ------------------------------------------------- evidence fencing (finding 6)
