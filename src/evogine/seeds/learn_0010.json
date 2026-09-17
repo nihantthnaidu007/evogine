@@ -1,0 +1,26 @@
+{
+  "id": "learn_0010",
+  "type": "check",
+  "title": "Verifier limit: bytecode counting cannot see C-level builtin work",
+  "body": {
+    "signal": "A candidate that shifts work from Python bytecode into C builtins (str methods, dict ops, itertools) scores an 'improvement' that the instruction counter manufactured.",
+    "failure_mode": "Instruction counting is deterministic and reproducible but structurally blind below the bytecode layer; phase0's largest passing 'improvement' was driven by exactly this shift (word_cooccurrence family).",
+    "detection": "When a large claimed gain coincides with replacing Python-level loops with builtin calls, cross-check with wall-clock timing on the held-out workload before trusting it.",
+    "fix_strategy": "Disclose the metric limit in every benchmark report (as phase0 does); where affordable, pair op counts with timing on a fixed machine profile."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "phase0/runs/FINAL_REPORT.md section 'Not measured, and why'",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

@@ -1,0 +1,26 @@
+{
+  "id": "learn_0005",
+  "type": "failure-pattern",
+  "title": "Over-abstraction: structure wrapped around a one-liner",
+  "body": {
+    "signal": "A class, helper, or indirection layer wrapping a single arithmetic expression or builtin call that has exactly one caller (e.g. celsius_to_fahrenheit wrapped in pointless structure).",
+    "failure_mode": "Every layer adds naming and indirection cost with zero behavior benefit; the reader must visit three definitions to learn one formula.",
+    "detection": "AST analysis: helper with exactly one call site and a trivially small body (single expression or single return) is an inlining candidate.",
+    "fix_strategy": "Inline the indirection. Gate: tests plus equivalence; the public API must remain unchanged."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "Darwin cases/celsius_to_fahrenheit/meta.json (category=over_abstraction, 6 cases)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

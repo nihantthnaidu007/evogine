@@ -1,0 +1,26 @@
+{
+  "id": "learn_0009",
+  "type": "check",
+  "title": "No improvement claim below the per-case noise floor",
+  "body": {
+    "signal": "A reported gain whose magnitude is within run-to-run variance for that case.",
+    "failure_mode": "Per-case floors (1.4826 x MAD of centered repeats) ranged 0.00-20.92 pp in phase0; pooled robust floor 4.80 pp; without floors, near-floor 'wins' are noise wearing a medal.",
+    "detection": "Compute the floor per case from at least 20 repeated pipeline runs before comparing arms; report medians, never means (heavy tails: one anagram repeat at -30,578.9 percent).",
+    "fix_strategy": "Block promotion of any run-level 'improvement' claim whose paired delta is not above the case floor; 12 paired cases detect a 5 pp median effect at alpha .05, power .8."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "phase0/runs/FINAL_REPORT.md sections Q2, Q3 (corpus-size calculation)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

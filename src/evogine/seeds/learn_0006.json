@@ -1,0 +1,26 @@
+{
+  "id": "learn_0006",
+  "type": "failure-pattern",
+  "title": "Unnecessary dependency: imports doing what builtins do",
+  "body": {
+    "signal": "External or heavyweight imports used for operations the stdlib covers (e.g. importing a statistics library to average a list).",
+    "failure_mode": "Extra supply-chain and maintenance surface for no behavioral gain; heavyweight imports slow cold start and complicate sandboxing.",
+    "detection": "Import-vs-usage analysis: list imported symbols, drop or replace those whose behavior a builtin or stdlib call reproduces identically.",
+    "fix_strategy": "Replace with the stdlib equivalent. Gate: equivalence must hold exactly, not approximately - floating-point paths must match."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "Darwin cases/average/meta.json (category=unnecessary_dependency, 5 cases)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}
