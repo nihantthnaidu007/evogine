@@ -563,6 +563,26 @@ class Reflector:
 # The real adapter
 # ---------------------------------------------------------------------------
 
+#: Bounded request-timeout defaults for the live provider client.
+#:
+#: The read bound is the worst-case generation ceiling: builders/verifiers
+#: emitting full max_tokens replies legitimately take minutes, so it is set
+#: generous (the top of the 300–600s range) to never false-fail a real
+#: generation. The connect bound is short — a live edge answers or the fault
+#: is already known. Retries are bounded at one so a transient blip
+#: self-heals without multiplying the worst-case wall time (the SDK default
+#: of 2 retries triples it).
+DEFAULT_CONNECT_TIMEOUT_S: float = 10.0
+DEFAULT_READ_TIMEOUT_S: float = 600.0
+DEFAULT_MAX_RETRIES: int = 1
+
+#: Uploading the request body and waiting for a pool slot are bounded too —
+#: prompts are kilobytes-to-megabytes and the swarm's parallel builders each
+#: need one connection — but they are not the hang surface, so they stay
+#: fixed constants rather than config knobs.
+_WRITE_TIMEOUT_S: float = 60.0
+_POOL_TIMEOUT_S: float = 60.0
+
 
 class AnthropicModel:
     """ModelClient over the Anthropic Messages API.
@@ -572,11 +592,35 @@ class AnthropicModel:
     The per-record seed is recorded provenance only — the Messages API has no
     seed parameter — and thinking-off keeps the temperature free (learn_0012
     measured thinking-on as nondeterministic even with a pinned seed).
+
+    The lazily built SDK client carries explicit, bounded timeouts
+    (``DEFAULT_CONNECT_TIMEOUT_S`` connect, ``DEFAULT_READ_TIMEOUT_S`` read —
+    configurable via the constructor, never the SDK's implicit defaults) and
+    ``DEFAULT_MAX_RETRIES`` retries. As constructed before this contract, the
+    bare ``anthropic.Anthropic()`` left the SDK's implicit defaults in force
+    (read 600s, 2 retries): a hung request surfaced its first exception only
+    after the full ~30-minute retry ladder drained, unconfigurable from this
+    layer. Two honest limits remain: the httpx read bound is a between-bytes
+    gap, not a total-request cap, so a trickling stalled connection can still
+    exceed it; and the timeout bounds the wait — the typed
+    ``APITimeoutError`` that surfaces is what lets the loop degrade the
+    candidate and continue (the PR #28 fault contract).
     """
 
-    def __init__(self, client: Any | None = None, *, thinking_budget_tokens: int = 4096) -> None:
+    def __init__(
+        self,
+        client: Any | None = None,
+        *,
+        thinking_budget_tokens: int = 4096,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT_S,
+        read_timeout: float = DEFAULT_READ_TIMEOUT_S,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+    ) -> None:
         self._client = client
         self._thinking_budget = thinking_budget_tokens
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
+        self._max_retries = max_retries
 
     def generate(
         self, *, messages: list[dict[str, str]], model_config: ModelConfig
@@ -618,11 +662,26 @@ class AnthropicModel:
             stop_reason=response.stop_reason,
         )
 
-    @staticmethod
-    def _default_client() -> Any:
-        import anthropic  # imported lazily: only real runs need credentials
+    def _default_client(self) -> Any:
+        """The live SDK client, bounded: explicit timeouts, bounded retries.
 
-        return anthropic.Anthropic()
+        Both imports are lazy — only real runs need credentials — and
+        ``httpx2`` is the httpx the pinned anthropic 1.6 SDK is built on
+        (requirements.lock); the timeout object must come from that same
+        module so the SDK's transports honor it.
+        """
+        import anthropic
+        import httpx2
+
+        return anthropic.Anthropic(
+            timeout=httpx2.Timeout(
+                connect=self._connect_timeout,
+                read=self._read_timeout,
+                write=_WRITE_TIMEOUT_S,
+                pool=_POOL_TIMEOUT_S,
+            ),
+            max_retries=self._max_retries,
+        )
 
 
 def _split_system_messages(

@@ -15,6 +15,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import anthropic
+import httpx2
+
+from evogine import swarm
 from evogine.engine.bootstrap import load_seeds
 from evogine.engine.store import Engine
 from evogine.swarm.fencing import UNTRUSTED_CLOSE, UNTRUSTED_OPEN, strip_unsafe_characters
@@ -114,14 +118,24 @@ class FlakyModel(FakeModel):
 
     Stands in for a model-client/API fault: the real adapter propagates SDK
     errors unwrapped, so raising here surfaces at the role-call boundary
-    exactly as a live outage would.
+    exactly as a live outage would. ``error`` swaps the fault for another
+    exception type — the typed ``anthropic.APITimeoutError`` a hung request
+    raises, in particular.
     """
 
-    def __init__(self, *, role: str, fail_on: int | None = None, fail_all: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        role: str,
+        fail_on: int | None = None,
+        fail_all: bool = False,
+        error: Exception | None = None,
+    ) -> None:
         super().__init__()
         self._role = role
         self._fail_on = fail_on
         self._fail_all = fail_all
+        self._error = error if error is not None else ConnectionError("simulated API outage")
         self._role_calls = 0
         self._flaky_lock = threading.Lock()
 
@@ -135,7 +149,7 @@ class FlakyModel(FakeModel):
             else:
                 nth = None
         if nth is not None and (self._fail_all or nth == self._fail_on):
-            raise ConnectionError("simulated API outage")
+            raise self._error
         return super().generate(messages=messages, model_config=model_config)
 
 
@@ -586,6 +600,88 @@ def test_reflector_api_exception_is_recorded_not_fatal(tmp_path: Path) -> None:
     assert reflector_record["failure_detail"] == (
         "reflector call failed: ConnectionError: simulated API outage"
     )
+    assert reflector_record["prompt_messages"][0]["role"] == "system"
+
+
+# ------------------- hung-request timeouts (the phase-2 stall: todo_qbittgyj)
+
+
+def _api_timeout_error() -> anthropic.APITimeoutError:
+    """The SDK's typed fault for a hung request, as the live adapter raises it."""
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.APITimeoutError(request)
+
+
+def test_builder_timeout_degrades_one_candidate_and_run_continues(tmp_path: Path) -> None:
+    """A hung request surfaces the SDK's typed timeout and the loop degrades it
+    exactly like any other API fault — driven through ``swarm.run_task``, the
+    package's re-exported public surface, so the degradation contract holds
+    where callers actually get it."""
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="builder", fail_on=2, error=_api_timeout_error())
+    report = swarm.run_task(make_task(), engine, fake, FakeGate(), make_config(tmp_path))
+
+    # The run completed and the healthy candidate was built, gated, retained.
+    assert report["retained"] == "candidate"
+    assert report["best"] is not None
+    assert (report["best"]["generation"], report["best"]["candidate_index"]) == (0, 0)
+
+    healthy, degraded = report["candidates"]
+    assert healthy["verdict"] == "pass"
+    assert degraded["verdict"] == "fail"
+    assert degraded["properties_passed"] == 0
+    assert degraded["properties_total"] == 0
+    assert degraded["verifier_verdict"] == "unknown"
+
+    rollouts = read_rollouts(tmp_path / "runs" / "rollouts.jsonl")
+    degraded_record = next(
+        record
+        for record in rollouts
+        if record["stage"] == "candidate"
+        and (record["generation"], record["candidate_index"]) == (0, 1)
+    )
+    # The typed timeout is named in the audit trail — the 20-minute silent
+    # stall becomes a recorded, attributable failure.
+    assert degraded_record["verdict"] == "fail"
+    assert degraded_record["failure_detail"].startswith("builder call failed: APITimeoutError:")
+
+
+def test_verifier_timeout_degrades_the_unit_fail_closed(tmp_path: Path) -> None:
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="verifier", fail_on=1, error=_api_timeout_error())
+    report = run_task(make_task(), engine, fake, FakeGate(), make_config(tmp_path))
+
+    degraded, healthy = report["candidates"]
+    # The gate passed the candidate, but the review hung: fail-closed.
+    assert degraded["verdict"] == "fail"
+    assert degraded["verifier_verdict"] == "unknown"
+    assert healthy["verdict"] == "pass"
+    assert report["retained"] == "candidate"
+    assert report["best"] is not None
+    assert (report["best"]["generation"], report["best"]["candidate_index"]) == (0, 1)
+
+    rollouts = read_rollouts(tmp_path / "runs" / "rollouts.jsonl")
+    degraded_record = next(
+        record
+        for record in rollouts
+        if record["stage"] == "candidate"
+        and (record["generation"], record["candidate_index"]) == (0, 0)
+    )
+    assert degraded_record["failure_detail"].startswith("verifier review failed: APITimeoutError:")
+
+
+def test_reflector_timeout_is_recorded_not_fatal(tmp_path: Path) -> None:
+    engine = seeded_engine(tmp_path)
+    fake = FlakyModel(role="reflector", fail_on=1, error=_api_timeout_error())
+    fake.builder_reply = broken_reply  # every candidate fails, so the reflector runs
+    report = run_task(make_task(), engine, fake, FakeGate(), make_config(tmp_path))
+
+    assert report["retained"] == "baseline"
+    assert report["proposal"] is None  # the diagnosis hung; nothing landed
+    rollouts = read_rollouts(tmp_path / "runs" / "rollouts.jsonl")
+    reflector_record = next(record for record in rollouts if record["stage"] == "reflector")
+    assert reflector_record["verdict"] == "fail"
+    assert reflector_record["failure_detail"].startswith("reflector call failed: APITimeoutError:")
     assert reflector_record["prompt_messages"][0]["role"] == "system"
 
 
