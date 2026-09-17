@@ -22,7 +22,9 @@ src/evogine/
 │   ├── code_gate.py   # gate 1: sandboxed pytest + differential equivalence + never-worse
 │   └── memory_gate.py # gate 2: counterfactual replay promotion of learned knowledge
 ├── swarm/
-│   └── roles.py       # builder / verifier / reflector responsibilities
+│   ├── roles.py       # builder / verifier / reflector clients over the Anthropic API
+│   ├── runner.py      # the task loop: retrieve -> candidates -> gate -> retain -> reflect
+│   └── rollouts.py    # enforced phase0 rollout records (JSONL audit per run)
 ├── bench/
 │   ├── harness.py     # warm-vs-cold decay-pressure benchmark
 │   └── cases/         # benchmark cases (empty for now)
@@ -34,9 +36,14 @@ src/evogine/
 
 v1 engine core implemented: the git-backed `Engine` (propose / queue-replay /
 promote / demote / retrieve, one commit per mutation), an append-only audit
-log, and the bootstrap loader for the 12 human-promoted seed records. Gates,
-swarm runner, CLI subcommands, and the benchmark remain staged for later
-phases.
+log, and the bootstrap loader for the 12 human-promoted seed records. The
+swarm task loop is implemented: builder / verifier / reflector role clients,
+warm retrieval into builder prompts, best-of-N retention with a never-worse
+fallback to the baseline, and reflector learnings landing `ephemeral` through
+`Engine.propose` — every step recorded in the phase0 rollout schema with the
+learn_0012 determinism playbook (thinking off, pinned temperature, per-record
+seeds). Code gate adaptation, CLI subcommands, and the benchmark remain
+staged for later phases.
 
 ## Spec
 
