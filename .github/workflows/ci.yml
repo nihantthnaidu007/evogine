@@ -45,8 +45,11 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      - name: Pytest
-        run: pytest -q
+      # Coverage floor: fail the job if total coverage drops below the pinned
+      # value (the level the suite actually measures; raise, never lower, it
+      # as tests land).
+      - name: Pytest with coverage floor
+        run: pytest -q --cov=evogine --cov-fail-under=88
 
   docker-gates:
     runs-on: ubuntu-latest
@@ -78,10 +81,10 @@ jobs:
       - name: Confirm the tests' skipif condition is satisfied
         run: docker image inspect evogine-sandbox:py313 > /dev/null
 
-      # -k docker selects exactly the five Docker-gated tests (test_docker_*
-      # in tests/test_sandbox.py and tests/test_memory_gate.py); the rest of
-      # the suite stays with lint-and-test. The grep guard fails the job if
-      # any selected test is skipped anyway.
+      # -k docker selects exactly the eight Docker-gated tests (test_docker_*:
+      # six in tests/test_sandbox.py and two in tests/test_memory_gate.py);
+      # the rest of the suite stays with lint-and-test. The grep guard fails
+      # the job if any selected test is skipped anyway.
       - name: Run the Docker-gated gate tests
         run: |
           set -o pipefail

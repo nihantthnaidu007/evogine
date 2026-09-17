@@ -17,7 +17,17 @@ import pytest
 from pytest import CaptureFixture
 
 from evogine import cli as cli_module
-from evogine.cli import CliConfig, UnsafeExecutorConfig, _validate_executor_pairing, main
+from evogine.bench.harness import ModelConfig
+from evogine.cli import (
+    CliConfig,
+    ScriptedModel,
+    UnsafeExecutorConfig,
+    _build_model,
+    _executor,
+    _validate_executor_pairing,
+    load_config,
+    main,
+)
 
 CASE_ID = "counter-overflow-wrap"
 
@@ -177,3 +187,86 @@ def test_local_executor_with_scripted_provider_is_unaffected() -> None:
     config = CliConfig(executor="local", model_provider="scripted")
     # Passing without raising is the assertion.
     _validate_executor_pairing(config, allow_local_live=False)
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed validation paths: bad input raises, never silently coerced.
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_rejects_non_mapping_document(tmp_path: Path) -> None:
+    """A YAML scalar or list is not a config: refuse it instead of guessing keys."""
+    config = tmp_path / "scalar.yaml"
+    config.write_text("just a string\n", encoding="utf-8")
+    with pytest.raises(TypeError, match="must be a mapping"):
+        load_config(config)
+
+
+@pytest.mark.parametrize("unknown_key", ["typo_key", "model_name", "generations_"])
+def test_load_config_rejects_unknown_keys(tmp_path: Path, unknown_key: str) -> None:
+    """Unknown keys are rejected, not ignored — a silently dropped setting lies."""
+    config = tmp_path / "unknown-key.yaml"
+    config.write_text(f"runs_dir: runs\n{unknown_key}: 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown keys") as excinfo:
+        load_config(config)
+    assert unknown_key in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("model: claude-x", id="model-is-a-scalar"),
+        pytest.param(
+            "model:\n  provider: scripted\n  surprise: 1", id="model-has-unknown-subkey"
+        ),
+    ],
+)
+def test_load_config_rejects_malformed_model_block(tmp_path: Path, raw: str) -> None:
+    """The model block must be exactly {provider, name}: anything else is refused."""
+    config = tmp_path / "model.yaml"
+    config.write_text(raw + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match='must be a mapping of "provider" and "name"'):
+        load_config(config)
+
+
+_SCRIPTED_CONFIG = ModelConfig(
+    model="scripted-model", temperature=0.0, thinking=False, seed="test-seed"
+)
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        pytest.param([], id="no-system-prompt"),
+        pytest.param(
+            [{"role": "system", "content": "You are the mysterious oracle"}],
+            id="unrecognized-role",
+        ),
+        pytest.param(
+            [{"role": "user", "content": "You are the repair builder"}],
+            id="role-text-outside-system",
+        ),
+    ],
+)
+def test_scripted_model_refuses_unrecognized_role_prompts(
+    messages: list[dict[str, str]],
+) -> None:
+    """The scripted model routes by role system prompt; anything else fails closed."""
+    model = ScriptedModel(builder_reply="x")
+    with pytest.raises(RuntimeError, match="unrecognized role"):
+        model.generate(messages=messages, model_config=_SCRIPTED_CONFIG)
+
+
+@pytest.mark.parametrize("provider", ["magic", "openai", "", "Scripted"])
+def test_build_model_rejects_unknown_providers(provider: str) -> None:
+    """Only scripted and anthropic are supported; anything else is refused."""
+    config = CliConfig(model_provider=provider)
+    with pytest.raises(ValueError, match="unknown model provider"):
+        _build_model(config, baseline_files={})
+
+
+@pytest.mark.parametrize("name", ["magic", "ssh", "", "Local"])
+def test_executor_rejects_unknown_names(name: str) -> None:
+    """Only docker and local are supported; anything else is refused."""
+    with pytest.raises(ValueError, match="unknown executor"):
+        _executor(name)
