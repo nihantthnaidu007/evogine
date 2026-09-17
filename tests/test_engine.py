@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -345,3 +346,90 @@ def test_draft_schema_violations_surface(tmp_path: Path) -> None:
         engine.propose(draft(type="gossip"))
     with pytest.raises(ValidationError):
         engine.propose(draft(confidence=1.5))
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed integrity paths: corruption and illegal transitions raise.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "corrupt_line",
+    [
+        pytest.param("{not json", id="malformed-json"),
+        pytest.param('{"action": "propose"}', id="schema-violation"),
+        pytest.param("garbage", id="plain-text"),
+    ],
+)
+def test_audit_log_refuses_corrupt_lines(
+    tmp_path: Path, corrupt_line: str
+) -> None:
+    """A corrupt line is an integrity break, not a gap: fail closed, naming its location."""
+    log_path = tmp_path / "audit" / "audit.jsonl"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text(
+        '{"timestamp": "2026-01-01T00:00:00Z", "actor": "engine", "action": "propose",'
+        ' "learning_id": "learn_ok"}\n' + corrupt_line + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="corrupt audit log.*line 2"):
+        AuditLog(log_path).entries()
+
+
+def test_promote_refuses_dropped_record(tmp_path: Path) -> None:
+    """Dropped is terminal: promotion is refused and the refusal is audited."""
+    engine = make_engine(tmp_path)
+    proposed = engine.propose(draft())
+    engine.promote(proposed.id, passing_evidence())
+    engine.demote(proposed.id, "regressed a later run")
+    with pytest.raises(InvalidTransitionError, match="dropped"):
+        engine.promote(proposed.id, passing_evidence())
+    refusal = engine.audit.find("promote-rejected", proposed.id)
+    assert len(refusal) == 1
+    assert refusal[0].reason is not None and "dropped" in refusal[0].reason
+
+
+def test_promote_refuses_already_promoted_record(tmp_path: Path) -> None:
+    """Re-promotion cannot overwrite the evidence the first promotion was stamped with."""
+    engine = make_engine(tmp_path)
+    proposed = engine.propose(draft())
+    engine.promote(proposed.id, passing_evidence())
+    with pytest.raises(InvalidTransitionError, match="already promoted"):
+        engine.promote(proposed.id, passing_evidence())
+    assert len(engine.audit.find("promote-rejected", proposed.id)) == 1
+
+
+def test_queue_replay_refuses_promoted_and_dropped_records(tmp_path: Path) -> None:
+    """Replay is queueable only for ephemeral/candidate records — never terminal ones."""
+    engine = make_engine(tmp_path)
+    record = engine.propose(draft())
+    engine.promote(record.id, passing_evidence())
+    with pytest.raises(InvalidTransitionError, match="cannot queue replay"):
+        engine.queue_replay(record.id, ["run_9"])
+    engine.demote(record.id, "regressed a later run")
+    with pytest.raises(InvalidTransitionError, match="cannot queue replay"):
+        engine.queue_replay(record.id, ["run_10"])
+    assert len(engine.audit.find("queue-replay-rejected", record.id)) == 2
+
+
+def test_demote_refuses_dropped_record(tmp_path: Path) -> None:
+    """A dropped record cannot be re-dropped: the lifecycle is not a loop."""
+    engine = make_engine(tmp_path)
+    proposed = engine.propose(draft())
+    engine.promote(proposed.id, passing_evidence())
+    engine.demote(proposed.id, "regressed a later run")
+    with pytest.raises(InvalidTransitionError, match="only promoted records demote"):
+        engine.demote(proposed.id, "dropping a dropped record")
+    assert len(engine.audit.find("demote-rejected", proposed.id)) == 1
+
+
+def test_git_failure_fails_closed_with_runtime_error(tmp_path: Path) -> None:
+    """When git fails, the mutation raises — a store never pretends it persisted."""
+    engine = make_engine(tmp_path)
+    proposed = engine.propose(draft())
+    engine.promote(proposed.id, passing_evidence())
+    # Break the repository out from under the store; the next mutation must
+    # fail loudly instead of leaving an uncommitted, unlogged write.
+    shutil.rmtree(Path(engine.data_dir) / ".git")
+    with pytest.raises(RuntimeError, match=r"git add.*failed"):
+        engine.demote(proposed.id, "regressed a later run")
