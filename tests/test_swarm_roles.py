@@ -145,7 +145,10 @@ def test_anthropic_model_splits_system_and_separates_reasoning() -> None:
     assert kwargs is not None
     assert kwargs["system"] == "SYSTEM PROMPT"
     assert kwargs["messages"] == [{"role": "user", "content": "USER PROMPT"}]
-    assert kwargs["temperature"] == 0.0
+    # anthropic>=1.6 removed the typed temperature kwarg; the playbook pins
+    # temperature through extra_body instead.
+    assert "temperature" not in kwargs
+    assert kwargs["extra_body"] == {"temperature": 0.0}
     assert kwargs["max_tokens"] == 99
     assert kwargs["thinking"] == {"type": "disabled"}
     assert response.text == "REPAIRED SOURCE"
@@ -168,7 +171,11 @@ def test_anthropic_model_thinking_on_pins_temperature() -> None:
     assert kwargs is not None
     assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
     # The API's constraint; learn_0012 measured thinking-on as nondeterministic.
-    assert kwargs["temperature"] == 1.0
+    # Regression: anthropic 1.6.0 raises TypeError on a typed temperature kwarg
+    # (crashed every live run before any HTTP request); temperature must ride
+    # through extra_body instead.
+    assert "temperature" not in kwargs
+    assert kwargs["extra_body"] == {"temperature": 1.0}
 
 
 def test_model_response_defaults() -> None:
