@@ -87,6 +87,14 @@ jobs:
 
   gitleaks:
     runs-on: ubuntu-latest
+    # Least privilege for the action's PR-scan API calls: on pull_request
+    # events it lists the PR's commits (GET /pulls/<n>/commits requires
+    # pull-requests: read). The default private-repo token lacks that scope,
+    # which failed the scan with 403 "Resource not accessible by integration"
+    # (gitleaks#1343). contents: read covers the checkout and push-event scans.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
