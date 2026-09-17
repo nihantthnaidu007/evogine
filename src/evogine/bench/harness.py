@@ -36,6 +36,7 @@ the same run share ``run_id``, so cold and warm candidates at the same
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -163,6 +164,10 @@ class SwarmModelBridge:
     def generate(
         self, *, messages: list[dict[str, str]], model_config: SwarmModelConfig
     ) -> SwarmModelResponse:
+        # Time at the bridge — the one seam every role's call crosses — so the
+        # rollout records carry per-call latency even though the bench
+        # protocol's ModelResponse has no latency field to forward.
+        started = time.perf_counter()
         response = self._builder.generate(
             messages=messages,
             model_config=ModelConfig(
@@ -172,10 +177,12 @@ class SwarmModelBridge:
                 seed=model_config.seed,
             ),
         )
+        latency_ms = (time.perf_counter() - started) * 1000.0
         return SwarmModelResponse(
             text=response.extracted_code,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
+            latency_ms=latency_ms,
         )
 
 

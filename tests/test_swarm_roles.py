@@ -61,6 +61,15 @@ def test_extract_code_plain_reply_is_the_source() -> None:
     assert extract_code("def fetch():\n    return 1\n") == "def fetch():\n    return 1"
 
 
+def test_extract_code_json_fence_keeps_payload_tag_free() -> None:
+    """A package reply fences its {"files": ...} payload as ```json; the tag
+    must be consumed by the fence, not ride into the extracted content (live
+    pilot: the python-only tag alternation leaked ``json\n`` into the payload
+    and every package-layout candidate failed extraction)."""
+    text = '```json\n{"files": {"a.py": "x = 1\\n"}}\n```'
+    assert extract_code(text) == '{"files": {"a.py": "x = 1\\n"}}'
+
+
 def test_parse_verdict_pass_fail_unknown() -> None:
     assert parse_verdict("VERDICT: pass\nfine under pressure") == "pass"
     assert parse_verdict("verdict: fail\nraises OverflowError") == "fail"
