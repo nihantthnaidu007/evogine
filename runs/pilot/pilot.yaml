@@ -1,0 +1,13 @@
+# Phase-1 pilot configuration (live warm-vs-cold pilot, merged as PR #9).
+# Provenance: runs/pilot/rollouts.jsonl was produced with this exact config
+# (runs_dir pointed at runs/pilot during live execution).
+runs_dir: runs/pilot
+engine_root: runs/pilot/engine
+executor: local
+model:
+  provider: anthropic
+  name: claude-sonnet-4-5
+generations: 1
+candidates_per_generation: 4
+temperature: 0.0
+retrieval_k: 5
