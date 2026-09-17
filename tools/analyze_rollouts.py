@@ -34,6 +34,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from evogine.swarm.determinism import derive_seed
+
 #: Candidate/verifier records must carry this determinism block (learn_0012).
 PLAYBOOK = "learn_0012"
 
@@ -122,17 +124,32 @@ def spend_by_stage(records: list[dict[str, Any]]) -> dict[str, dict[str, float]]
     return dict(summary)
 
 
-def determinism_coverage(records: list[dict[str, Any]]) -> tuple[int, int]:
-    """Count candidate/verifier records missing the learn_0012 block."""
-    checked = missing = 0
+def determinism_coverage(records: list[dict[str, Any]]) -> dict[str, int]:
+    """Verify the learn_0012 block on candidate/verifier records.
+
+    Beyond presence, the recorded seed must equal the canonical derivation
+    over the record identity — a present-but-wrong seed is exactly the
+    failure the determinism playbook exists to catch.
+    """
+    checked = missing = mismatched = 0
     for record in records:
         if record.get("stage") not in ("candidate", "verifier"):
             continue
         checked += 1
         config = record.get("config") or {}
-        if config.get("playbook") != PLAYBOOK or not config.get("seed"):
+        seed = config.get("seed")
+        if config.get("playbook") != PLAYBOOK or not seed:
             missing += 1
-    return checked, missing
+            continue
+        expected = derive_seed(
+            str(record.get("run_id")),
+            str(record.get("case_id")),
+            int(record.get("generation") or 0),
+            int(record.get("candidate_index") or 0),
+        )
+        if seed != expected:
+            mismatched += 1
+    return {"checked": checked, "missing": missing, "seed_mismatches": mismatched}
 
 
 def analyze(records: list[dict[str, Any]]) -> dict[str, Any]:

@@ -27,11 +27,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_crosscase import RUNS, invocation_config
 
 #: The invocations lost to the 2026-09-17 API stall, in driver order.
+#: Worker 1 hung on concurrency r4 with the counter-overflow-wrap shard
+#: never started, so the full missing set is eight invocations.
 PAIRS: list[tuple[str, int]] = [
     ("concurrency-account-ledger", 4),
     ("partial-batch-write", 3),
     ("partial-batch-write", 4),
     ("unicode-nfkc-key", 4),
+    ("counter-overflow-wrap", 1),
+    ("counter-overflow-wrap", 2),
+    ("counter-overflow-wrap", 3),
+    ("counter-overflow-wrap", 4),
 ]
 
 
