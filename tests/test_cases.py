@@ -15,10 +15,12 @@ and at least two multi-file (port-style) package cases.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from evogine.bench.gate import PropertiesGate
-from evogine.bench.task import discover_case_ids, load_task
+from evogine.bench.task import UnsafeCaseId, discover_case_ids, load_task
 
 CASE_IDS = discover_case_ids()
 MIN_DISTINCT_AXES = 6
@@ -78,3 +80,56 @@ def test_every_case_has_visible_tests() -> None:
         task = load_task(case_id)
         suite = task.suite_path.read_text(encoding="utf-8")
         assert "def test_" in suite, f"{case_id}: visible suite has no tests"
+
+
+# Case-id containment: the join behind load_task must refuse escapes (the
+# resolve-under-root pattern from gates/sandbox.py).
+
+
+def test_load_task_rejects_traversal(tmp_path: Path) -> None:
+    with pytest.raises(UnsafeCaseId, match="bare directory name"):
+        load_task("../seeds", cases_root=tmp_path)
+    with pytest.raises(UnsafeCaseId, match="bare directory name"):
+        load_task("a/b", cases_root=tmp_path)
+
+
+def test_load_task_rejects_absolute_path(tmp_path: Path) -> None:
+    with pytest.raises(UnsafeCaseId, match="bare directory name"):
+        load_task("/etc/passwd", cases_root=tmp_path)
+
+
+def test_load_task_rejects_empty_or_null_case_id(tmp_path: Path) -> None:
+    with pytest.raises(UnsafeCaseId, match="empty or contains a null byte"):
+        load_task("", cases_root=tmp_path)
+    with pytest.raises(UnsafeCaseId, match="empty or contains a null byte"):
+        load_task("ca\x00se", cases_root=tmp_path)
+
+
+def test_load_task_rejects_dot_and_dotdot(tmp_path: Path) -> None:
+    with pytest.raises(UnsafeCaseId, match="bare directory name"):
+        load_task(".", cases_root=tmp_path)
+    with pytest.raises(UnsafeCaseId, match="bare directory name"):
+        load_task("..", cases_root=tmp_path)
+
+
+def test_load_task_rejects_symlink_escape(tmp_path: Path) -> None:
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    cases_root = tmp_path / "cases"
+    cases_root.mkdir()
+    (cases_root / "innocent").symlink_to(decoy)
+    with pytest.raises(UnsafeCaseId, match="escapes the cases root"):
+        load_task("innocent", cases_root=cases_root)
+
+
+def test_load_task_nonexistent_case_still_fails_loudly(tmp_path: Path) -> None:
+    # A well-formed unknown id passes containment and fails later, with the
+    # ordinary missing-file error — validation narrows the join, not the
+    # loud-failure contract.
+    with pytest.raises(ValueError, match="missing case file"):
+        load_task("no_such_case", cases_root=tmp_path)
+
+
+def test_load_task_still_loads_valid_case() -> None:
+    task = load_task(CASE_IDS[0])
+    assert task.case_id == CASE_IDS[0]

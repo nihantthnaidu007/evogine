@@ -21,7 +21,8 @@ evogine 0.1.0
 
 The default sandboxed executor additionally needs Docker (one-time sandbox
 image build, see [CLI](#cli)); a YAML config can select the trusted-local
-subprocess executor instead.
+subprocess executor instead. For a locked, CI-identical environment, see
+[Development](#development).
 
 ## Quickstart
 
@@ -182,8 +183,12 @@ same `(generation, candidate_index)` are seed-paired.
 
 ## Development
 
+Python 3.12+. Install with the committed lockfile so a development
+environment matches CI:
+
 ```console
-$ pip install -e ".[dev]"
+$ pip install -r requirements.lock
+$ pip install -e . --no-deps
 $ ruff check .
 $ mypy src tests
 $ pytest -q
@@ -193,6 +198,15 @@ The Docker-gated gate tests skip unless the pinned sandbox image exists —
 build it once with `docker build -f docker/Dockerfile.sandbox -t
 evogine-sandbox:py313 docker/`; CI covers them in a dedicated docker-gates job
 that fails if any of those tests silently skips.
+
+`requirements.lock` pins the full dependency closure of `[project]` plus the
+`dev` extra (pytest, ruff, mypy, types-PyYAML) that CI installs from directly.
+Regenerate it after changing dependencies in `pyproject.toml`:
+
+```console
+$ pip install pip-tools
+$ pip-compile --extra dev --output-file requirements.lock pyproject.toml
+```
 
 ## Spec
 

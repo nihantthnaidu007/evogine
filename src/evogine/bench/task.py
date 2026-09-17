@@ -30,6 +30,10 @@ REQUIRED_META_FIELDS = ("case_id", "decay_axis", "difficulty", "description")
 VALID_DIFFICULTIES = ("easy", "medium", "hard")
 
 
+class UnsafeCaseId(ValueError):
+    """A case id that cannot name a case directory inside the cases root."""
+
+
 @dataclass(frozen=True)
 class BenchTask:
     """One decay-pressure task, loaded from its case directory.
@@ -66,9 +70,30 @@ def discover_case_ids(cases_root: Path | None = None) -> list[str]:
     return sorted(path.name for path in root.iterdir() if (path / "meta.json").is_file())
 
 
+def _case_dir(case_id: str, cases_root: Path | None) -> Path:
+    """Resolve ``case_id`` under the cases root, refusing any escape.
+
+    The containment pattern from ``gates/sandbox.py`` (the v1 security
+    review's resolve-under-root check for staged file names), applied to the
+    case id: absolute ids and traversal are rejected lexically first, and
+    the join must still resolve inside the resolved cases root so even a
+    symlinked corpus directory cannot smuggle a case outside it.
+    """
+    if not case_id or "\x00" in case_id:
+        raise UnsafeCaseId(f"case id is empty or contains a null byte: {case_id!r}")
+    candidate = Path(case_id)
+    if candidate.is_absolute() or len(candidate.parts) != 1 or candidate.name in (".", ".."):
+        raise UnsafeCaseId(f"case id must be a bare directory name: {case_id!r}")
+    root = (cases_root if cases_root is not None else CASES_DIR).resolve()
+    resolved = (root / candidate).resolve()
+    if not resolved.is_relative_to(root):
+        raise UnsafeCaseId(f"case id escapes the cases root: {case_id!r}")
+    return resolved
+
+
 def load_task(case_id: str, cases_root: Path | None = None) -> BenchTask:
     """Load and validate the case ``case_id``; raise on any malformation."""
-    root = (cases_root if cases_root is not None else CASES_DIR) / case_id
+    root = _case_dir(case_id, cases_root)
     meta = _load_json(root / "meta.json")
     missing = [name for name in REQUIRED_META_FIELDS if name not in meta]
     if missing:

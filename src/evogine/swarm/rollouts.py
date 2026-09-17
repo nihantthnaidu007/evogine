@@ -14,10 +14,8 @@ gap. Rollout records stay host-side; failure details may name hidden property
 ids and expected values, so they must never be rendered into a builder prompt
 (the runner's tests guard that path).
 
-``bench/rollouts.py`` — the benchmark harness's writer — owns the benchmark
-side of the base schema; this module is the swarm-side twin, extended with the
-swarm provenance fields and kept dependency-free so either package can land
-first. Once both are merged the schema tuples should be reconciled.
+This is the only rollout writer: the benchmark harness runs the swarm loop,
+so benchmark rollouts flow through this same writer.
 """
 
 from __future__ import annotations

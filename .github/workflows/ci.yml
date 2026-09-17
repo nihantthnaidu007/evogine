@@ -36,8 +36,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
+      - name: Install locked dependencies
+        run: pip install -r requirements.lock
+
+      - name: Install the package itself
+        run: pip install -e . --no-deps
 
       - name: Ruff lint
         run: ruff check .
@@ -56,8 +59,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
+      - name: Install locked dependencies
+        run: pip install -r requirements.lock
+
+      - name: Install the package itself
+        run: pip install -e . --no-deps
 
       # Pinned base (python:3.13-slim@sha256:c33f...4f, multi-arch manifest
       # digest) resolves to the amd64 image on x86_64 runners, so the CI-built
