@@ -16,26 +16,38 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pytest import CaptureFixture
 
-from evogine.cli import main
+from evogine.bench.harness import ModelResponse as BenchModelResponse
+from evogine.bench.harness import SwarmModelBridge, to_swarm_task
+from evogine.bench.task import load_task
+from evogine.cli import ScriptedModel, main
+from evogine.engine.records import (
+    LearningRecord,
+    RecordBody,
+    RecordCounterfactual,
+    RecordProvenance,
+)
 from evogine.engine.store import Engine
 from evogine.gates import sandbox as sbx
-from evogine.gates.code_gate import GateInput, GateVerdict, GoldenCase
+from evogine.gates.code_gate import GateInput, GateResult, GateVerdict, GoldenCase
 from evogine.gates.memory_gate import MemoryGate
-from evogine.gates.replay import AppliedPatch, RunLog
+from evogine.gates.replay import AppliedPatch, RecordedRun, RunLog, replay_one
+from evogine.swarm.gates_adapter import CodeGateAdapter
 from evogine.swarm.promotion import (
+    BuilderApplier,
     PromotionWiring,
     finish_promotion,
     gate_result_from_outcome,
     record_candidate_run,
     recorded_run_id,
 )
-from evogine.swarm.roles import ModelResponse
+from evogine.swarm.roles import BUILDER_PACKAGE_NOTE, Builder, ModelClient, ModelResponse
 from evogine.swarm.runner import GateOutcome, SwarmConfig, SwarmTask, run_task
 
 LOCAL = sbx.LocalSubprocessSandbox()
@@ -181,9 +193,7 @@ class ScriptedRoles:
     def __init__(self, builder_reply: str) -> None:
         self._builder_reply = builder_reply
 
-    def generate(
-        self, *, messages: list[dict[str, str]], model_config: Any
-    ) -> ModelResponse:
+    def generate(self, *, messages: list[dict[str, str]], model_config: Any) -> ModelResponse:
         system = next((m["content"] for m in messages if m.get("role") == "system"), "")
         if system.startswith("You are the repair builder"):
             return ModelResponse(text=self._builder_reply)
@@ -384,9 +394,7 @@ def test_unwired_run_writes_no_run_log(tmp_path: Path) -> None:
     engine = Engine(tmp_path / "engine")
     task = make_task(tmp_path)
     config = make_config(tmp_path, "run_a")
-    report = run_task(
-        task, engine, ScriptedRoles(builder_reply=BROKEN_SRC), TaxonomyGate(), config
-    )
+    report = run_task(task, engine, ScriptedRoles(builder_reply=BROKEN_SRC), TaxonomyGate(), config)
     assert "promotion" not in report
     assert not (tmp_path / "engine" / "runlog.jsonl").exists()
 
@@ -553,9 +561,7 @@ def _write_config(tmp_path: Path) -> Path:
 CASE_ID = "counter-overflow-wrap"
 
 
-def test_evolve_runs_the_wired_loop_end_to_end(
-    tmp_path: Path, capsys: CaptureFixture[str]
-) -> None:
+def test_evolve_runs_the_wired_loop_end_to_end(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
     """The full loop under the deterministic scripted model: recorded runs,
     a queued learning, an honest rejection, and the audit trail — no API."""
     config = _write_config(tmp_path)
@@ -576,6 +582,336 @@ def test_evolve_runs_the_wired_loop_end_to_end(
     learning_id = promotion["learning_id"]
     assert engine.get(learning_id).status == "ephemeral"
     assert len(engine.audit.find("promote-rejected", learning_id)) == 1
+
+
+# ------------------------------------------------- the package-layout loop
+#
+# The quality audit's two highest-value coverage holes: no test drives a
+# multi-file package candidate through the wired loop (runner extraction,
+# gates_adapter staging, the production applier's re-keying all untested),
+# and the production BuilderApplier's success paths never execute — every
+# promotion test above stubs the applier by hand. These close both, on the
+# real corpus case and the trusted local executor.
+
+
+@dataclass
+class RepairThenApplyScriptedModel:
+    """A scripted builder whose repair reply and apply reply differ.
+
+    The CLI's :class:`ScriptedModel` routes both the repair builder's propose
+    call and the learning applier's apply call to one ``builder_reply`` — both
+    role prompts open "You are the repair builder". A package-layout promotion
+    needs them to differ: the repair builder re-emits the degraded tree (the
+    gate rejects it, so the reflector proposes), while the applier returns the
+    FIXED tree so the warm replay can flip. The applier call is distinguished
+    by its prompt's unique "You are applying" clause.
+    """
+
+    repair_reply: str
+    apply_reply: str
+    apply_prompts: list[dict[str, str]] = field(default_factory=list)
+
+    def generate(self, *, messages: list[dict[str, str]], model_config: Any) -> BenchModelResponse:
+        system = next((m["content"] for m in messages if m.get("role") == "system"), "")
+        if "You are applying" in system:
+            self.apply_prompts.append(dict(messages[0]))
+            return BenchModelResponse(extracted_code=self.apply_reply)
+        return ScriptedModel(builder_reply=self.repair_reply).generate(
+            messages=messages, model_config=model_config
+        )
+
+
+class CapturingModel:
+    """A roles-level ModelClient that records every prompt it is handed."""
+
+    def __init__(self, inner: ModelClient) -> None:
+        self._inner = inner
+        self.prompts: list[list[dict[str, str]]] = []
+
+    def generate(self, *, messages: list[dict[str, str]], model_config: Any) -> ModelResponse:
+        self.prompts.append([dict(m) for m in messages])
+        return self._inner.generate(messages=messages, model_config=model_config)
+
+
+# A minimal package unit for the applier unit tests. Recorded runs key
+# candidate files by unprefixed unit path (the staging convention), so the
+# fixtures mirror that shape rather than any bench case.
+UNIT_BASELINE = {
+    "__init__.py": "from .ledger import fold\n\n__all__ = ['fold']\n",
+    "ledger.py": (
+        "def fold(ops):\n    last = 0\n    for op in ops:\n        last = op[1]\n    return last\n"
+    ),
+}
+UNIT_FIXED = {
+    "__init__.py": UNIT_BASELINE["__init__.py"],
+    "ledger.py": "def fold(ops):\n    return sorted(ops, key=lambda op: op[0])[-1][1]\n",
+}
+
+
+def make_learning() -> LearningRecord:
+    """A queued learning record, shaped like the reflector's proposals."""
+    return LearningRecord(
+        id="learn_pkg",
+        type="failure-pattern",
+        title="fold pending writes by sequence number",
+        body=RecordBody(
+            signal="reconcile folds writes in arrival order",
+            failure_mode="last-arrival-wins instead of last-sequence-wins",
+            detection="equivalence witness on the reorder scenario",
+            fix_strategy="sort the pending writes by sequence before folding",
+        ),
+        status="candidate",
+        confidence=0.9,
+        provenance=RecordProvenance(
+            proposed_by="reflector",
+            origin="swarm-runner",
+            source="test",
+            note="promotion-loop test fixture",
+        ),
+        counterfactual=RecordCounterfactual(),
+        created=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def make_single_file_run() -> RecordedRun:
+    """A recorded single-function run (the add fixture family)."""
+    return RecordedRun(
+        run_id="run_a::warm::case_add::candidate::generation-0::candidate-0",
+        case_id="case_add",
+        gate_input=GateInput.single_function(
+            baseline_source=BASELINE_SRC,
+            candidate_source=BROKEN_SRC,
+            entry_point="add",
+            test_suite=SUITE,
+            golden_cases=GOLDEN_CASES,
+        ),
+        cold=GateResult(
+            verdict=GateVerdict.FAIL_TESTS,
+            accepted=False,
+            gate="tests",
+            reason="add returns a - b",
+        ),
+    )
+
+
+def make_multi_file_run() -> RecordedRun:
+    """A recorded multi-file run: candidate files keyed by unit path."""
+    return RecordedRun(
+        run_id="run_pkg::warm::case_pkg::candidate::generation-0::candidate-0",
+        case_id="case_pkg",
+        gate_input=GateInput.multi_file(
+            baseline_files=dict(UNIT_BASELINE),
+            candidate_files=dict(UNIT_BASELINE),
+            entry_class="Ledger",
+            corpus_source="def build_corpus():\n    return []\n",
+        ),
+        cold=GateResult(
+            verdict=GateVerdict.FAIL_EQUIVALENCE,
+            accepted=False,
+            gate="equivalence",
+            reason="reorder scenario diverged from the reference",
+        ),
+    )
+
+
+@dataclass
+class RecordingGate:
+    """A gate stub for replay: records the warm inputs it was handed."""
+
+    accepted: bool = True
+    seen: list[GateInput] = field(default_factory=list)
+
+    def evaluate(self, gate_input: GateInput, *, timeout: float = 10.0) -> GateResult:
+        self.seen.append(gate_input)
+        return GateResult(
+            verdict=GateVerdict.PASS_TESTS if self.accepted else GateVerdict.FAIL_TESTS,
+            accepted=self.accepted,
+            gate=None if self.accepted else "tests",
+            reason="",
+        )
+
+
+def test_builder_applier_single_file_reply_becomes_the_module_patch() -> None:
+    """The single-file success path: the scripted reply text IS the patch.
+
+    Every promotion-loop test above stubs the applier; this drives the
+    production :class:`BuilderApplier` through the real Builder + scripted
+    model seam the CLI wires.
+    """
+    builder = Builder(SwarmModelBridge(ScriptedModel(builder_reply=GOOD_SRC)), "scripted-model")
+    patch = BuilderApplier(builder)(make_learning(), make_single_file_run())
+    # extract_code strips the reply text; the patch carries the stripped module.
+    assert patch == AppliedPatch(candidate_files={"candidate.py": GOOD_SRC.strip()})
+
+
+def test_builder_applier_single_file_treats_any_reply_as_source() -> None:
+    """Single-file asymmetry: a reply cannot fail to parse — the text IS the
+    module, and the replayed gate (not the parser) judges it."""
+    builder = Builder(
+        SwarmModelBridge(ScriptedModel(builder_reply="return None  # not code")),
+        "scripted-model",
+    )
+    patch = BuilderApplier(builder)(make_learning(), make_single_file_run())
+    assert patch is not None
+    assert patch.candidate_files == {"candidate.py": "return None  # not code"}
+
+
+def test_builder_applier_multi_file_reply_is_rekeyed_and_fed_to_replay() -> None:
+    """The multi-file success path: parse the mapping, re-key it via
+    ``_unit_path`` onto the recorded run's unit paths, and hand the patch to
+    replay unchanged — where the cold-rejected run flips to accepted."""
+    scripted_reply = json.dumps(
+        {
+            "files": {
+                "candidate/__init__.py": UNIT_FIXED["__init__.py"],  # prefixed: re-keyed
+                "ledger.py": UNIT_FIXED["ledger.py"],  # unprefixed: kept
+            }
+        }
+    )
+    builder = Builder(
+        SwarmModelBridge(ScriptedModel(builder_reply=scripted_reply)), "scripted-model"
+    )
+    run = make_multi_file_run()
+    learning = make_learning()
+
+    patch = BuilderApplier(builder)(learning, run)
+    assert patch == AppliedPatch(candidate_files=UNIT_FIXED)
+
+    gate = RecordingGate(accepted=True)
+    result = replay_one(run, learning, BuilderApplier(builder), gate, repeats=2)
+    assert result.applied is True
+    assert result.warm_verdicts == ("pass_tests", "pass_tests")
+    assert result.material_flip is True  # cold rejected, warm accepted, MAD 0
+    # The re-keyed patch — not the raw reply keys — is what replay evaluated.
+    assert gate.seen[0].candidate_files == UNIT_FIXED
+
+
+def test_builder_applier_prompts_the_recorded_candidate_multi_file() -> None:
+    """The applier's builder call renders the recorded unit files and the
+    multi-file reply contract — the prompt seam every warm repeat rides on."""
+    inner = CapturingModel(
+        SwarmModelBridge(ScriptedModel(builder_reply=json.dumps({"files": UNIT_FIXED})))
+    )
+    BuilderApplier(Builder(inner, "scripted-model"))(make_learning(), make_multi_file_run())
+
+    assert len(inner.prompts) == 1
+    system = inner.prompts[0][0]["content"]
+    user = inner.prompts[0][1]["content"]
+    assert "You are applying" in system
+    # multi_file=True: the JSON reply contract rides in the user template.
+    assert BUILDER_PACKAGE_NOTE in user
+    assert UNIT_BASELINE["ledger.py"] in user
+
+
+def test_builder_applier_rejects_malformed_multi_file_replies() -> None:
+    """The mapping-validation rejection path: a reply that cannot parse into a
+    string-keyed mapping returns ``None`` — replay records ``not_applied``,
+    the failure surfaces in the evidence, nothing crashes or fabricates."""
+    bad_replies = [
+        "def not_json():\n    return None\n",  # no JSON at all
+        '["not", "an", "object"]',  # JSON, not an object
+        '{"verdict": "fine"}',  # missing the "files" key
+        '{"files": ["ledger.py"]}',  # files is a list
+        '{"files": {"ledger.py": 404}}',  # non-string source
+        '{"files": {"ledger.py": null}}',  # non-string source (None)
+    ]
+    for reply in bad_replies:
+        builder = Builder(SwarmModelBridge(ScriptedModel(builder_reply=reply)), "scripted-model")
+        patch = BuilderApplier(builder)(make_learning(), make_multi_file_run())
+        assert patch is None, reply
+
+
+def test_package_candidate_drives_the_full_promotion_loop(tmp_path: Path) -> None:
+    """A multi-file package candidate through the whole wired loop, on a real
+    corpus case — the audit's untested path end to end.
+
+    The scripted repair builder re-emits the degraded tree with unprefixed
+    unit paths: the runner's package extraction normalizes them under
+    ``candidate/``, the gate adapter's staging strips the prefix back off, and
+    the real code gate rejects the candidate on equivalence. The reflector
+    proposes, and the memory gate replays through the PRODUCTION
+    BuilderApplier, whose scripted apply reply carries ``candidate/``-prefixed
+    keys — the re-keyed patch must land on the recorded run's unit paths for
+    the warm arm to accept the fix and promote the learning.
+    """
+    task = to_swarm_task(load_task("concurrency-account-ledger"))
+    assert task.layout == "package"
+    engine = Engine(tmp_path / "engine")
+    run_log = RunLog(tmp_path / "engine" / "runlog.jsonl")
+    model = RepairThenApplyScriptedModel(
+        repair_reply=json.dumps(
+            {
+                "files": {
+                    # Unprefixed: the runner's extraction re-prefixes under candidate/.
+                    name.removeprefix("candidate/"): source
+                    for name, source in task.baseline_files.items()
+                }
+            }
+        ),
+        apply_reply=json.dumps(
+            {
+                # Prefixed: the production applier must re-key onto unit paths.
+                "files": dict(sorted(task.reference_files.items()))
+            }
+        ),
+    )
+    builder = Builder(SwarmModelBridge(model), "scripted-model")
+    wiring = PromotionWiring(
+        run_log=run_log,
+        memory_gate=MemoryGate(run_log=run_log, applier=BuilderApplier(builder), executor=LOCAL),
+    )
+
+    report = run_task(
+        task,
+        engine,
+        SwarmModelBridge(model),
+        CodeGateAdapter(executor=LOCAL),
+        make_config(tmp_path, "run_pkg"),
+        promotion=wiring,
+    )
+
+    # Extraction + staging: the candidate run recorded the unprefixed unit
+    # tree, cold-rejected by the real gate on equivalence.
+    promotion = report["promotion"]
+    assert promotion["queued_run_ids"] == [
+        "run_pkg::warm::concurrency-account-ledger::baseline",
+        "run_pkg::warm::concurrency-account-ledger::candidate::generation-0::candidate-0",
+    ]
+    candidate_run = run_log.get(promotion["queued_run_ids"][1])
+    assert candidate_run.gate_input.scope == "multi-file"
+    assert set(candidate_run.gate_input.candidate_files) == {
+        "__init__.py",
+        "account.py",
+        "ledger.py",
+    }
+    assert candidate_run.cold.verdict is GateVerdict.FAIL_EQUIVALENCE
+
+    # The production applier re-keys the prefixed reply onto unit paths.
+    learning_id = promotion["learning_id"]
+    assert learning_id is not None
+    learning = engine.get(learning_id)
+    patch = BuilderApplier(builder)(learning, candidate_run)
+    assert patch == AppliedPatch(
+        candidate_files={
+            name.removeprefix("candidate/"): source for name, source in task.reference_files.items()
+        }
+    )
+    # The applier prompt carried the multi-file reply contract — the seam the
+    # warm repeats rode on.
+    assert model.apply_prompts
+    assert "You are applying" in model.apply_prompts[0]["content"]
+
+    # The decision is measured, not asserted: both replayed runs flipped
+    # fail -> pass under the re-keyed patch, above a zero floor.
+    assert promotion["decision"] == "promoted"
+    record = engine.get(learning_id)
+    assert record.status == "promoted"
+    assert record.counterfactual.verdict_change is True
+    assert record.counterfactual.replay_run_ids == promotion["queued_run_ids"]
+    evidence = json.loads(record.counterfactual.evidence or "{}")
+    per_run = {entry["run_id"]: entry for entry in evidence["per_run"]}
+    assert all(entry["material_flip"] is True for entry in per_run.values())
+    assert per_run[candidate_run.run_id]["warm_verdicts"] == ["pass_tests"] * 3
 
 
 def test_run_cli_still_writes_no_run_log(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
