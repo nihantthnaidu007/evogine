@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -101,7 +102,11 @@ def freeze_case(case_id: str) -> None:
     task: BenchTask = load_task(case_id)
     doc = task.properties
     with candidate_import_context(task.reference_files):
-        import candidate  # the reference, materialized exactly as the gate does
+        # The reference module exists only at runtime (materialized inside the
+        # import context); import_module resolves it through the same import
+        # machinery the gate uses, and types as the ModuleType _resolve_entry
+        # expects — a static `import candidate` is invisible to the type checker.
+        candidate = importlib.import_module("candidate")
 
         entry = _resolve_entry(candidate, doc["entry"])
         frozen_properties: list[dict[str, Any]] = []
