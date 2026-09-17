@@ -9,6 +9,41 @@ and a **memory gate** (counterfactual-replay promotion) — decide what lands an
 remembered; a decay-pressure benchmark measures, warm versus cold, whether accumulated
 knowledge actually improves outcomes.
 
+## Install
+
+Requires Python 3.12+ and Git. From a clone of this repository:
+
+```console
+$ pip install -e ".[dev]"
+$ evogine --version
+evogine 0.1.0
+```
+
+The default sandboxed executor additionally needs Docker (one-time sandbox
+image build, see [CLI](#cli)); a YAML config can select the trusted-local
+subprocess executor instead.
+
+## Quickstart
+
+Deterministic offline smoke run — the scripted model, the local executor, one
+full loop pass (no API key, no Docker; the JSON report it prints is the worked
+example under [CLI](#cli)):
+
+```console
+$ evogine case list
+audit-ring-drop
+billing-day-offset
+...
+
+$ evogine case inspect counter-overflow-wrap
+case: counter-overflow-wrap
+decay_axis: overflow
+...
+
+$ printf 'executor: local\n' > local.yaml
+$ evogine run --case counter-overflow-wrap --arm cold --config local.yaml
+```
+
 ## Layout
 
 ```
@@ -144,6 +179,20 @@ recorded in `rollouts.jsonl` under the phase0 schema. With a seeded engine
 and `--arm warm`, the warm arm injects promoted knowledge into the builder
 prompt; arms of one run share `run_id`, so cold and warm candidates at the
 same `(generation, candidate_index)` are seed-paired.
+
+## Development
+
+```console
+$ pip install -e ".[dev]"
+$ ruff check .
+$ mypy src tests
+$ pytest -q
+```
+
+The Docker-gated gate tests skip unless the pinned sandbox image exists —
+build it once with `docker build -f docker/Dockerfile.sandbox -t
+evogine-sandbox:py313 docker/`; CI covers them in a dedicated docker-gates job
+that fails if any of those tests silently skips.
 
 ## Spec
 

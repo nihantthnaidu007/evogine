@@ -5,9 +5,27 @@ build-backend = "hatchling.build"
 [project]
 name = "evogine"
 version = "0.1.0"
-description = "Self-evolving agentic engine: git-backed learning, builder/verifier/reflector swarm, two objective gates, decay-pressure benchmark."
+description = "Self-evolving agentic engine: git-backed learning, a builder/verifier/reflector swarm, two objective gates, and a decay-pressure benchmark."
 readme = "README.md"
 requires-python = ">=3.12"
+keywords = [
+    "agents",
+    "llm",
+    "agentic",
+    "self-evolving",
+    "swarm",
+    "code-repair",
+    "benchmark",
+    "pydantic",
+    "anthropic",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
 dependencies = [
     # Pinned to the range the extra_body temperature routing was live-verified
     # against: 1.6.0 rejects the typed temperature kwarg client-side (TypeError
