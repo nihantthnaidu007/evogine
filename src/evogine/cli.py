@@ -33,6 +33,13 @@ Docker executor.  A YAML config (``--config``) may select:
     candidates_per_generation: 1
     temperature: 0.0
     retrieval_k: 5
+
+The ``executor: local`` executor runs model-generated code as host processes
+with network access — it is a trusted-subprocess convenience, NOT a security
+boundary. Pairing it with the live provider (``model.provider: anthropic``)
+raises :class:`UnsafeExecutorConfig` by default; pass ``--allow-local-live``
+to opt in deliberately (local dev iteration with a real provider). Live runs
+without that explicit opt-out belong in ``executor: docker``.
 """
 
 from __future__ import annotations
@@ -101,6 +108,36 @@ class CliConfig:
     candidates_per_generation: int = 1
     temperature: float = 0.0
     retrieval_k: int = 5
+
+
+class UnsafeExecutorConfig(ValueError):
+    """A run configuration pairs the local executor with a live provider.
+
+    The local executor runs model-generated code as host processes with
+    network access; it is explicitly not a security boundary (v1 security
+    review, findings H3/M4). Such a pairing is refused unless the caller
+    opts in with ``--allow-local-live``.
+    """
+
+
+def _validate_executor_pairing(config: CliConfig, *, allow_local_live: bool) -> None:
+    """Refuse ``executor: local`` + a live provider unless explicitly allowed.
+
+    No-op for every safe pairing (docker with anything, local with the
+    scripted model); raises :class:`UnsafeExecutorConfig` for the dangerous
+    one so the reason is named at the config layer, before anything runs.
+    """
+    if config.executor != "local" or config.model_provider != "anthropic":
+        return
+    if allow_local_live:
+        return
+    raise UnsafeExecutorConfig(
+        f"executor:local paired with the live provider {config.model_provider!r} is"
+        " refused by default: the local executor runs model-generated code as host"
+        " processes with network access, and local execution is not a security"
+        " boundary. Use executor:docker for live runs, or pass --allow-local-live"
+        " to accept this deliberately."
+    )
 
 
 def load_config(path: Path) -> CliConfig:
@@ -212,6 +249,7 @@ def _executor(name: str) -> Executor | None:
 def _cmd_run(args: argparse.Namespace) -> int:
     """Run one case through the wired loop and print the JSON report."""
     config = load_config(Path(args.config)) if args.config else CliConfig()
+    _validate_executor_pairing(config, allow_local_live=bool(args.allow_local_live))
     task = load_task(args.case)
     arms: tuple[Arm, ...] = (args.arm,) if args.arm else ("cold", "warm")
 
@@ -318,6 +356,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm", choices=["warm", "cold"], default=None, help="single arm (default: both)"
     )
     run_parser.add_argument("--config", default=None, help="YAML config path")
+    run_parser.add_argument(
+        "--allow-local-live",
+        action="store_true",
+        help=(
+            "allow executor:local with a live provider (anthropic); refused by "
+            "default because local execution is not a security boundary"
+        ),
+    )
     run_parser.set_defaults(func=_cmd_run)
 
     evolve_parser = sub.add_parser(

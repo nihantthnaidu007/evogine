@@ -83,6 +83,13 @@ evogine-sandbox:py313 docker/`). A YAML `--config` file may select
 scripted|anthropic`, `runs_dir`, `engine_root`, and the determinism knobs —
 see the `evogine.cli` module docstring for the full key list.
 
+The local executor is a trusted subprocess, **not** a security boundary: it
+runs model-generated code as host processes with network access. Pairing it
+with the live provider (`model.provider: anthropic`) is therefore refused by
+default with `UnsafeExecutorConfig`. For local dev iteration with a real
+provider, pass `--allow-local-live` explicitly; for anything untrusted, use
+`executor: docker`.
+
 Worked example, cold arm with the local executor (`local.yaml`:
 `executor: local`):
 
