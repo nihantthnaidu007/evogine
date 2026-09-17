@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from evogine.swarm.gates_adapter import CodeGateAdapter
+from evogine.swarm.promotion import (
+    BuilderApplier,
+    PromotionReport,
+    PromotionWiring,
+    finish_promotion,
+)
 from evogine.swarm.roles import (
     AnthropicModel,
     Builder,
@@ -37,6 +43,7 @@ __all__ = [
     "ROLLOUT_FIELDS",
     "AnthropicModel",
     "Builder",
+    "BuilderApplier",
     "CandidateGate",
     "CodeGateAdapter",
     "EngineLike",
@@ -44,6 +51,8 @@ __all__ = [
     "ModelClient",
     "ModelConfig",
     "ModelResponse",
+    "PromotionReport",
+    "PromotionWiring",
     "Reflector",
     "RoleCall",
     "RolloutWriter",
@@ -56,6 +65,7 @@ __all__ = [
     "build_verifier_messages",
     "derive_seed",
     "extract_code",
+    "finish_promotion",
     "parse_learning_draft",
     "parse_verdict",
     "render_knowledge",

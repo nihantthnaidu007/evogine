@@ -263,6 +263,60 @@ def extract_code(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Learning-applier prompts (the Builder's apply surface)
+# ---------------------------------------------------------------------------
+
+# The replay path's Builder voice: same public contract as the repair builder
+# (it is the same role), different ask — apply ONE recorded learning to a past
+# candidate's source. This is a builder-visible surface like every other role
+# prompt: the learning fields rendered here are the promoted-knowledge surface
+# (title and body, the same fields render_knowledge exposes), never golden
+# cases or the withheld test suite.
+APPLIER_SYSTEM_PROMPT = (
+    "You are the repair builder in a self-evolving engine. You are applying "
+    "one recorded learning to a past candidate's source so the memory gate "
+    "can replay the run with the learning in place. Apply the learning's fix "
+    "strategy to the source and keep the public contract. Return the "
+    "complete repaired source and nothing else."
+)
+
+APPLIER_TASK_TEMPLATE = (
+    "Learning to apply:\n"
+    "Title: {title}\n"
+    "Signal: {signal}\n"
+    "Fix strategy: {fix_strategy}\n"
+    "\n"
+    "Candidate source the learning applies to:\n{source}\n"
+    "\n"
+    "{package_note}\nApply the fix strategy and return the full repaired source now."
+)
+
+
+def build_applier_messages(
+    record: LearningRecord, candidate_files: Mapping[str, str], *, multi_file: bool
+) -> list[dict[str, str]]:
+    """Compose the Builder chat that applies one learning to a past candidate.
+
+    The rendered source blob is the recorded candidate (a builder output) —
+    the same material class a repair builder sees, never gate internals.
+    """
+    source_blob = "\n".join(
+        f"### {relative}\n{source}" for relative, source in sorted(candidate_files.items())
+    )
+    user = APPLIER_TASK_TEMPLATE.format(
+        title=record.title,
+        signal=record.body.signal,
+        fix_strategy=record.body.fix_strategy,
+        source=source_blob,
+        package_note=BUILDER_PACKAGE_NOTE if multi_file else "",
+    )
+    return [
+        {"role": "system", "content": APPLIER_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Reflector prompts and draft parsing
 # ---------------------------------------------------------------------------
 
@@ -371,6 +425,34 @@ class Builder:
     def propose(self, task: TaskView, knowledge: list[LearningRecord], *, seed: str) -> RoleCall:
         """Generate one candidate proposal for ``task`` given retrieved ``knowledge``."""
         messages = build_builder_messages(task, knowledge)
+        response = self.model.generate(
+            messages=messages,
+            model_config=ModelConfig(
+                model=self.model_name,
+                temperature=self.temperature,
+                thinking=self.thinking,
+                seed=seed,
+                max_tokens=self.max_tokens,
+            ),
+        )
+        return RoleCall(messages=messages, response=response)
+
+    def apply_learning(
+        self,
+        record: LearningRecord,
+        candidate_files: Mapping[str, str],
+        *,
+        multi_file: bool,
+        seed: str,
+    ) -> RoleCall:
+        """Apply one recorded learning to a past candidate's source.
+
+        The replay path's Builder surface: the memory gate calls this once per
+        replayed run through :class:`~evogine.swarm.promotion.BuilderApplier`,
+        which parses the reply into an :class:`~evogine.gates.replay.AppliedPatch`.
+        Determinism: same prompt + seed + model as the primary build call.
+        """
+        messages = build_applier_messages(record, candidate_files, multi_file=multi_file)
         response = self.model.generate(
             messages=messages,
             model_config=ModelConfig(

@@ -236,6 +236,7 @@ def _outcome_from_result(result: GateResult) -> GateOutcome:
             properties_passed=1,
             properties_total=1,
             ops=_ops_from_result(result),
+            gate_stage=result.gate,
         )
     return GateOutcome(
         verdict=result.verdict.value,
@@ -245,6 +246,7 @@ def _outcome_from_result(result: GateResult) -> GateOutcome:
         properties_passed=0,
         properties_total=1,
         ops=_ops_from_result(result),
+        gate_stage=result.gate,
     )
 
 
