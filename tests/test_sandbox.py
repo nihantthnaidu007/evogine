@@ -2,6 +2,7 @@
 the pinned lockdown argv (ported tier-a from Darwin's test_sandbox_argv.py),
 and Docker-gated smoke tests that skip when the boundary is unavailable."""
 
+import os
 import shutil
 import signal
 import tempfile
@@ -304,3 +305,66 @@ def test_docker_run_rejects_escape_before_any_container():
             {f"candidate/../../{probe}": "evil = 1"}, ["python", "-c", "pass"], timeout=10.0
         )
     assert not (Path(tempfile.gettempdir()) / probe).exists()
+
+
+# ================================ tier a: local executor env allowlist (H1, v1 review)
+
+
+def test_local_env_drops_secret_shaped_variables(monkeypatch):
+    # Everything outside the allowlist is dropped — including the live API
+    # key the loop process carries during a pilot run.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("EVOGINE_UNRELATED", "1")
+    monkeypatch.setenv("SOME_TOKEN", "t")
+    monkeypatch.delenv("TMPDIR", raising=False)
+    env = sbx._local_env()
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "EVOGINE_UNRELATED" not in env
+    assert "SOME_TOKEN" not in env
+    # Exactly the allowlist as available in this environment, plus the pins.
+    passthrough = {name for name in sbx._LOCAL_ENV_ALLOWLIST if name in os.environ}
+    assert set(env) == passthrough | {"PYTHONHASHSEED", "PYTHONDONTWRITEBYTECODE"}
+    assert env["PYTHONHASHSEED"] == "0" and env["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_local_executor_never_leaks_environ_to_candidate(monkeypatch):
+    # The candidate prints its own environ; neither the secret's NAME nor its
+    # VALUE may appear in the captured result (H1: {**os.environ} passed both).
+    secret_value = "sk-ant-evogine-h1-probe-0123456789abcdef"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret_value)
+    monkeypatch.setenv("EVOGINE_H1_PROBE", secret_value)
+    probe_script = (
+        "import os, re\n"
+        "keys = sorted(os.environ)\n"
+        "print('\\n'.join(keys))\n"
+        # Any secret-shaped name (…KEY, …TOKEN, …SECRET) must be absent.
+        "shaped = [k for k in keys if re.search(r'(KEY|TOKEN|SECRET)', k)]\n"
+        "assert not shaped, f'secret-shaped env leaked: {shaped}'\n"
+    )
+    res = LOCAL.run({"probe.py": probe_script}, ["python", "probe.py"], timeout=10.0)
+    assert res.status is sbx.RunStatus.OK
+    assert "ANTHROPIC_API_KEY" not in res.stdout
+    assert "EVOGINE_H1_PROBE" not in res.stdout
+    assert secret_value not in res.stdout
+    assert secret_value not in res.stderr
+
+
+def test_local_executor_runs_sufficiently_with_allowlist():
+    # A minimal env must still run real candidate code: imports, file I/O in
+    # the staging dir, and the determinism contract.
+    res = LOCAL.run(
+        {
+            "main.py": (
+                "import hashlib, os, sys\n"
+                "from candidate.sub.module import VALUE\n"
+                "with open('out.txt', 'w') as f:\n"
+                "    f.write(hashlib.sha256(b'x').hexdigest())\n"
+                "print(VALUE, os.environ['PYTHONHASHSEED'], sys.executable is not None)"
+            ),
+            **LEGIT_PACKAGE_FILES,
+        },
+        ["python", "main.py"],
+        timeout=10.0,
+    )
+    assert res.status is sbx.RunStatus.OK
+    assert res.stdout.strip().startswith("2 0 ")  # VALUE=2, PYTHONHASHSEED pinned to 0
