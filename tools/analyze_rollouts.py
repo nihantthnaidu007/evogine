@@ -154,9 +154,18 @@ def analyze(records: list[dict[str, Any]]) -> dict[str, Any]:
                 if r.get("stage") == "candidate"
                 and (r.get("config") or {}).get("arm") == arm
             ]
+            # learn_0009: run-level outcome = accepted candidates per run_id;
+            # the median and its MAD floor come from repeats, never means.
+            per_run: dict[str, int] = defaultdict(int)
+            for r in arm_candidates:
+                per_run[str(r.get("run_id"))] += _accepted_bit(r)
+            outcomes = [per_run[run_id] for run_id in sorted(per_run)]
             case_report["arms"][arm] = {
                 "candidates": len(arm_candidates),
                 "accepted": sum(_accepted_bit(r) for r in arm_candidates),
+                "per_run_accepted": outcomes,
+                "median_outcome": median(outcomes) if outcomes else None,
+                "mad_floor": _median_abs_deviation([float(v) for v in outcomes]),
                 "never_worse_rejections": sum(_never_worse_rejection(r) for r in arm_candidates),
             }
         case_report["paired_deltas"] = deltas.get(case_id, {}).get("warm", [])
@@ -198,8 +207,8 @@ def main(argv: list[str] | None = None) -> int:
                             arm,
                             arm_report["candidates"],
                             arm_report["accepted"],
-                            arm_report["accepted"],
-                            "",
+                            arm_report["median_outcome"],
+                            arm_report["mad_floor"],
                             arm_report["never_worse_rejections"],
                             ";".join(str(d) for d in case_report["paired_deltas"]),
                         ]
