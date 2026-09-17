@@ -239,7 +239,9 @@ def test_failure_path_reflector_proposal_lands_ephemeral(tmp_path: Path) -> None
     assert report["retained"] == "baseline"
     assert report["best"] is None
     assert report["proposal"] is not None
-    record = engine.get(report["proposal"]["learning_id"])
+    learning_id = report["proposal"]["learning_id"]
+    assert isinstance(learning_id, str)
+    record = engine.get(learning_id)
     # The proposal landed through the engine's lifecycle: ephemeral, never promoted.
     assert record.status == "ephemeral"
     assert record.type == "failure-pattern"
@@ -322,7 +324,10 @@ def test_rollout_records_carry_full_phase0_schema(tmp_path: Path) -> None:
     reflector_record = rollouts[-1]
     assert reflector_record["stage"] == "reflector"
     assert reflector_record["generation"] is None
-    assert reflector_record["config"]["learning_id"] == report["proposal"]["learning_id"]
+    # The broken reply drove every candidate out, so the reflector proposed.
+    proposal = report["proposal"]
+    assert proposal is not None
+    assert reflector_record["config"]["learning_id"] == proposal["learning_id"]
     assert reflector_record["latency_ms"] >= 0.0
 
     # Rollout records append in deterministic generation/index order.

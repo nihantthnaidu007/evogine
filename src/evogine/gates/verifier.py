@@ -89,6 +89,15 @@ class VerifierTimeout(VerifierError):
     """The measurement run hit the sandbox's wall-clock timeout."""
 
 
+class VerifierCodeError(VerifierError):
+    """The MEASURED code raised while being measured (not an environment fault).
+
+    Distinguishing the two matters for the never-worse bar: an incumbent that
+    crashes on the replay inputs is exactly the decay the benchmark measures,
+    while a broken sandbox or driver must stay fail-closed.
+    """
+
+
 # The trusted in-container measurement driver, same emission pattern as
 # verify_case's golden driver (Darwin Phase I1): bind os.write/json.dumps and
 # load the inputs BEFORE the untrusted import, keep them as frame-locals inside
@@ -190,9 +199,10 @@ def measure_ops(
     ``cases`` are INPUT-side only mappings with ``args``/``kwargs`` — expected
     outputs are never needed for measurement and never sent to the executor.
     Returns the instruction count; raises :class:`VerifierTimeout` if the run
-    hits the wall clock and :class:`VerifierError` on any other unverifiable
-    outcome (non-ok run, missing/duplicate/unparseable frame, driver-reported
-    error such as a missing entry point or a disarmed monitoring hook).
+    hits the wall clock, :class:`VerifierCodeError` when the measured code
+    itself raises (a property of the code, not the sandbox), and
+    :class:`VerifierError` on any other unverifiable outcome (non-ok run,
+    missing/duplicate/unparseable frame, or a disarmed monitoring hook).
     """
     token = secrets.token_hex(16)
     inputs = {
@@ -222,7 +232,10 @@ def measure_ops(
             "ops measurement produced no verifiable frame (missing, duplicated, or unparseable)"
         )
     if "error" in frame:
-        raise VerifierError(f"ops measurement failed: {frame['error']}")
+        # The measured code itself raised (e.g. the degraded baseline crashing
+        # on a month-end golden input) — a property of the code, not the
+        # sandbox; typed so the gate can price the never-worse bar honestly.
+        raise VerifierCodeError(f"ops measurement failed: {frame['error']}")
     ops = frame.get("ops")
     if not isinstance(ops, int) or isinstance(ops, bool) or ops < 0:
         raise VerifierError(f"ops frame carries no usable count: {frame!r}")
