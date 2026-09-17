@@ -7,12 +7,21 @@ live round-trip is skipped unless ``ANTHROPIC_API_KEY`` is set.
 from __future__ import annotations
 
 import os
+import socket
+import threading
+import time
 from types import MappingProxyType, SimpleNamespace
+from typing import Any
 
+import anthropic
+import httpx2
 import pytest
 
 from evogine.engine.records import LearningRecord
 from evogine.swarm.roles import (
+    DEFAULT_CONNECT_TIMEOUT_S,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_READ_TIMEOUT_S,
     AnthropicModel,
     ModelConfig,
     ModelResponse,
@@ -192,6 +201,95 @@ def test_model_response_defaults() -> None:
     assert response.reasoning_content == ""
     assert response.input_tokens is None
     assert response.output_tokens is None
+
+
+class _SilentServer:
+    """A TCP server that accepts connections and never answers.
+
+    Stand-in for the observed phase-2 fault: an established connection whose
+    edge stops sending, so the request hangs in the read phase with no error
+    surfacing. The socket is real (not a mock transport) because the read
+    timeout is enforced by the transport layer, exactly as in a live hang.
+    """
+
+    def __enter__(self) -> str:
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(4)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+        host, port = self._sock.getsockname()
+        return f"http://{host}:{port}"
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self._sock.accept()
+                conn.recv(4096)  # drain the request, never reply
+            except OSError:
+                return  # server socket closed
+
+    def __exit__(self, *args: object) -> None:
+        self._sock.close()
+
+
+def test_hung_request_surfaces_the_typed_timeout() -> None:
+    """A request hung on an established connection raises the SDK's typed
+    timeout within the configured read bound — the fault the phase-2 benchmark
+    stalled 20+ minutes without when no read bound was effectively in force
+    (the default retry ladder drained silently)."""
+    with _SilentServer() as base_url:
+        # max_retries=0 keeps the bound exactly one read timeout; the default
+        # retry budget is pinned separately below.
+        client = anthropic.Anthropic(
+            api_key="test-key",
+            base_url=base_url,
+            timeout=httpx2.Timeout(connect=2.0, read=0.5, write=2.0, pool=2.0),
+            max_retries=0,
+        )
+        model = AnthropicModel(client=client)
+        started = time.perf_counter()
+        with pytest.raises(anthropic.APITimeoutError):
+            model.generate(
+                messages=[{"role": "user", "content": "go"}],
+                model_config=ModelConfig(
+                    model="claude-sonnet-4-5", temperature=0.0, thinking=False, seed="ab12cd34"
+                ),
+            )
+    # Bounded, not the observed silent hang; generous slop for slow CI hosts.
+    assert time.perf_counter() - started < 15
+
+
+def test_default_client_wires_the_configured_timeout_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The constructor knobs reach the SDK client: custom read timeout honored,
+    safe defaults explicit — never the SDK's implicit bare defaults."""
+    captured: dict[str, Any] = {}
+
+    class RecordingClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", RecordingClient)
+
+    # Defaults: short connect, the documented 600s generation ceiling, one
+    # bounded retry.
+    AnthropicModel()._default_client()
+    timeout = captured["timeout"]
+    assert isinstance(timeout, httpx2.Timeout)
+    assert timeout.connect == DEFAULT_CONNECT_TIMEOUT_S == 10.0
+    assert timeout.read == DEFAULT_READ_TIMEOUT_S == 600.0
+    assert captured["max_retries"] == DEFAULT_MAX_RETRIES == 1
+
+    # The knob is honored: a custom read timeout reaches the SDK client.
+    captured.clear()
+    AnthropicModel(read_timeout=321.0, connect_timeout=4.5, max_retries=2)._default_client()
+    custom = captured["timeout"]
+    assert isinstance(custom, httpx2.Timeout)
+    assert custom.connect == 4.5
+    assert custom.read == 321.0
+    assert captured["max_retries"] == 2
 
 
 @pytest.mark.skipif(
