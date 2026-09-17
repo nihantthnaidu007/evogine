@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pytest import CaptureFixture
@@ -35,7 +35,7 @@ from evogine.engine.records import (
 )
 from evogine.engine.store import Engine
 from evogine.gates import sandbox as sbx
-from evogine.gates.code_gate import GateInput, GateResult, GateVerdict, GoldenCase
+from evogine.gates.code_gate import CodeGate, GateInput, GateResult, GateVerdict, GoldenCase
 from evogine.gates.memory_gate import MemoryGate
 from evogine.gates.replay import AppliedPatch, RecordedRun, RunLog, replay_one
 from evogine.swarm.gates_adapter import CodeGateAdapter
@@ -778,7 +778,12 @@ def test_builder_applier_multi_file_reply_is_rekeyed_and_fed_to_replay() -> None
     assert patch == AppliedPatch(candidate_files=UNIT_FIXED)
 
     gate = RecordingGate(accepted=True)
-    result = replay_one(run, learning, BuilderApplier(builder), gate, repeats=2)
+    # RecordingGate implements exactly the evaluate seam replay_one uses
+    # (same signature as CodeGate.evaluate) but is a stub, not a CodeGate
+    # subclass — the cast documents that seam without wiring a real executor.
+    result = replay_one(
+        run, learning, BuilderApplier(builder), cast(CodeGate, gate), repeats=2
+    )
     assert result.applied is True
     assert result.warm_verdicts == ("pass_tests", "pass_tests")
     assert result.material_flip is True  # cold rejected, warm accepted, MAD 0

@@ -45,6 +45,13 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
+      # Full-repo mypy: src, tests, and tools are the complete tracked Python
+      # tree (no .py files live elsewhere in the repo), so this is the widest
+      # scope there is. The bench case corpus stays excluded via [tool.mypy]
+      # (candidate modules shadow names by design and are gate-validated).
+      - name: Mypy type check
+        run: mypy src tests tools
+
       # Coverage floor: fail the job if total coverage drops below the pinned
       # value (the level the suite actually measures; raise, never lower, it
       # as tests land).
