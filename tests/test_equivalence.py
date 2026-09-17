@@ -3,6 +3,8 @@ comparison, oracle-free witnesses, and the fail-closed replay statuses —
 exercised through the local executor (the same replay driver runs inside
 Docker in production)."""
 
+import re
+
 import pytest
 
 from evogine.gates import sandbox as sbx
@@ -221,3 +223,158 @@ def test_unit_malformed_corpus_is_value_error():
             LOCAL,
             timeout=5.0,
         )
+
+
+# ============================================ fail-closed frame handling
+#
+# Audit finding: the frame-corruption raises (missing, duplicated, or
+# unparseable frame, batch mismatch) had no tests. A stub executor doctors the
+# driver's token-framed stdout directly — no subprocess, no Docker daemon. The
+# token is random per call; stdout templates carry @TOKEN@, substituted at run
+# time from the driver source the executor receives.
+
+
+class StubExecutor:
+    """An executor that answers every run with a crafted token-framed stdout."""
+
+    def __init__(self, stdout_template: str) -> None:
+        self.stdout_template = stdout_template
+
+    def run(self, files, command, *, timeout):
+        match = re.search(r"'([0-9a-f]{32})'", files["driver.py"])
+        assert match is not None, "driver.py must embed the 32-hex frame token"
+        return sbx.RunResult(
+            sbx.RunStatus.OK,
+            0,
+            self.stdout_template.replace("@TOKEN@", match.group(1)),
+            "",
+            0.0,
+            False,
+            False,
+        )
+
+
+GOOD_FN = "def add(a, b):\n    return a + b\n"
+
+
+def test_function_missing_frame_is_replay_error():
+    """No token-prefixed frame at all: the replay is unverifiable."""
+    with pytest.raises(ReplayError):
+        check_function_equivalence(GOOD_FN, "add", _fn_cases(), StubExecutor(""), timeout=5.0)
+
+
+def test_function_duplicated_frame_is_replay_error():
+    """A forged frame emitted ALONGSIDE the real one is unverifiable by
+    construction: exactly-one fails closed."""
+    stdout = '\n@TOKEN@{"results": [5, 0, 0]}\n\n@TOKEN@{"results": [5, 0, 0]}\n'
+    with pytest.raises(ReplayError):
+        check_function_equivalence(GOOD_FN, "add", _fn_cases(), StubExecutor(stdout), timeout=5.0)
+
+
+def test_function_unparseable_frame_is_replay_error():
+    with pytest.raises(ReplayError):
+        check_function_equivalence(
+            GOOD_FN, "add", _fn_cases(), StubExecutor("\n@TOKEN@not json at all\n"), timeout=5.0
+        )
+
+
+def test_function_non_dict_frame_is_replay_error():
+    with pytest.raises(ReplayError):
+        check_function_equivalence(
+            GOOD_FN, "add", _fn_cases(), StubExecutor("\n@TOKEN@[1, 2, 3]\n"), timeout=5.0
+        )
+
+
+def test_function_wrong_length_results_is_replay_error():
+    """Three golden cases, one doctored result: the count mismatch fails
+    closed instead of comparing a truncated frame."""
+    with pytest.raises(ReplayError):
+        check_function_equivalence(
+            GOOD_FN, "add", _fn_cases(), StubExecutor('\n@TOKEN@{"results": [5]}\n'), timeout=5.0
+        )
+
+
+def test_candidate_forging_extra_frame_is_replay_error():
+    """End to end through the real local executor: a candidate that reads the
+    frame token out of driver.py and injects its own frame ALONGSIDE the
+    trusted driver's emission must fail closed (two frames = unverifiable)."""
+    forger = (
+        "import json, os, re\n"
+        "_src = open('driver.py', encoding='utf-8').read()\n"
+        "_token = re.search(r\"'([0-9a-f]{32})'\", _src).group(1)\n"
+        "os.write(1, ('\\n' + _token + json.dumps({'results': [5, 0, 0]}) + '\\n').encode())\n"
+        "\n"
+        "\n"
+        "def add(a, b):\n"
+        "    return a + b\n"
+    )
+    with pytest.raises(ReplayError):
+        check_function_equivalence(forger, "add", _fn_cases(), LOCAL, timeout=5.0)
+
+
+def test_unit_missing_frame_is_replay_error():
+    with pytest.raises(ReplayError):
+        check_unit_equivalence(
+            BASELINE_UNIT, EQUIV_UNIT, "Calc", CORPUS, StubExecutor(""), timeout=5.0
+        )
+
+
+def test_unit_error_frame_is_replay_error():
+    """A frame reporting the driver's own failure is a replay error, not a
+    comparison against a partial result."""
+    with pytest.raises(ReplayError, match="doctored"):
+        check_unit_equivalence(
+            BASELINE_UNIT,
+            EQUIV_UNIT,
+            "Calc",
+            CORPUS,
+            StubExecutor('\n@TOKEN@{"error": "ValueError: doctored by the candidate"}\n'),
+            timeout=5.0,
+        )
+
+
+def test_unit_frame_mismatched_sequence_names_is_replay_error():
+    """Right count, wrong sequence names: the frame does not match the batch."""
+    with pytest.raises(ReplayError, match="does not match the batch"):
+        check_unit_equivalence(
+            BASELINE_UNIT,
+            EQUIV_UNIT,
+            "Calc",
+            CORPUS,
+            StubExecutor('\n@TOKEN@{"sequences": [["renamed", []], ["basic", []]]}\n'),
+            timeout=5.0,
+        )
+
+
+def test_unit_frame_wrong_sequence_count_is_replay_error():
+    with pytest.raises(ReplayError, match="does not match the batch"):
+        check_unit_equivalence(
+            BASELINE_UNIT,
+            EQUIV_UNIT,
+            "Calc",
+            CORPUS,
+            StubExecutor('\n@TOKEN@{"sequences": [["first", []]]}\n'),
+            timeout=5.0,
+        )
+
+
+def test_unit_doctored_outcomes_are_rejected_not_scored():
+    """A well-formed frame carrying LYING outcomes must fail the comparison
+    with a witness — rejected, never scored as equivalent."""
+    stdout = (
+        "\n@TOKEN@"
+        '{"sequences": ['
+        '["first", [["__init__", ["ok", ["str", "<instance>"]]],'
+        ' ["value", ["ok", ["int", 999]]]]], '
+        '["basic", [["__init__", ["ok", ["str", "<instance>"]]],'
+        ' ["value", ["ok", ["int", 999]]],'
+        ' ["value", ["ok", ["int", 999]]]]]]}\n'
+    )
+    ok, witness, stats = check_unit_equivalence(
+        BASELINE_UNIT, EQUIV_UNIT, "Calc", CORPUS, StubExecutor(stdout), timeout=5.0
+    )
+    assert ok is False
+    assert witness is not None
+    assert witness["sequence"] == "first"
+    assert witness["call_index"] == 1
+    assert stats["executor_runs"] == 1
