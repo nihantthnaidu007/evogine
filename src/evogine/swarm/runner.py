@@ -332,6 +332,11 @@ def run_task(
     results = _generate_candidates(task, knowledge, builder, verifier, gate, config)
 
     # 5. Retention: best-of-N with a never-worse fallback to the baseline.
+    #    Collapsed (0/0) outcomes stay eligible by design: #14's
+    #    promotion-evidence contract pins that a candidate without
+    #    re-evaluable gate evidence must not reach the reflector, so no
+    #    learning is fabricated from nothing
+    #    (test_collapsed_candidate_records_no_replay_run).
     eligible = [
         result
         for result in results
@@ -647,6 +652,22 @@ def _render_evidence(baseline_outcome: GateOutcome, results: list[_CandidateResu
     return "\n".join(lines)
 
 
+def _strip_code_fence(reply: str) -> str:
+    """Strip one markdown code fence wrapping a JSON payload.
+
+    Real models wrap the ``{"files": ...}`` reply in a ``json`` fence even
+    when the contract asks for the raw object; the fence is presentation,
+    not content (first observed live in the phase-1 pilot on
+    concurrency-account-ledger: 8/8 replies fenced).  Only a leading and
+    trailing fence pair is removed; anything else passes through.
+    """
+    stripped = reply.strip()
+    if not (stripped.startswith("```") and stripped.endswith("```")):
+        return stripped
+    lines = stripped.split("\n")
+    return "\n".join(lines[1:-1]).strip()
+
+
 def extract_candidate_files(extracted_code: str, layout: str) -> dict[str, str]:
     """Turn a builder reply into candidate-tree files.
 
@@ -657,7 +678,7 @@ def extract_candidate_files(extracted_code: str, layout: str) -> dict[str, str]:
     if layout == "single":
         return {"candidate.py": extracted_code}
     if layout == "package":
-        payload = json.loads(extracted_code)
+        payload = json.loads(_strip_code_fence(extracted_code))
         files = payload["files"]
         if not isinstance(files, dict) or not all(
             isinstance(key, str) and isinstance(value, str) for key, value in files.items()

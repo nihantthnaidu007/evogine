@@ -247,7 +247,7 @@ def parse_verdict(text: str) -> str:
 # Builder reply parsing
 # ---------------------------------------------------------------------------
 
-_FENCED_CODE_RE = re.compile(r"```(?:python)?\s*(.*?)\s*```", re.DOTALL)
+_FENCED_CODE_RE = re.compile(r"```[a-zA-Z0-9+#.-]*\s*(.*?)\s*```", re.DOTALL)
 
 
 def extract_code(text: str) -> str:
@@ -255,7 +255,9 @@ def extract_code(text: str) -> str:
 
     A fenced block wins (the last one — the builder is instructed to put the
     final repair in its own fence); otherwise the whole stripped reply IS the
-    source, which keeps plain replies recoverable.
+    source, which keeps plain replies recoverable.  The fence tag is
+    tag-agnostic (``python``, ``json``, ``py3``, ...) so a package reply's
+    ``json`` tag never leaks into the payload (live pilot defect).
     """
     fenced = _FENCED_CODE_RE.findall(text)
     if fenced:

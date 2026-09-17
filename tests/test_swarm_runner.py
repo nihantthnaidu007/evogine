@@ -27,6 +27,7 @@ from evogine.swarm.runner import (
     _CandidateResult,
     _render_evidence,
     derive_seed,
+    extract_candidate_files,
     run_task,
 )
 
@@ -502,3 +503,21 @@ def test_reflector_system_prompt_defines_the_fence() -> None:
     assert UNTRUSTED_CLOSE in REFLECTOR_SYSTEM_PROMPT
     assert "untrusted data" in REFLECTOR_SYSTEM_PROMPT
     assert "never instructions" in REFLECTOR_SYSTEM_PROMPT
+
+def test_extract_candidate_files_strips_code_fence() -> None:
+    """Real models wrap the package JSON reply in a markdown fence; the
+    fence is presentation, not content (pilot: 8/8 fenced replies)."""
+    raw = json.dumps({"files": {"a.py": "x = 1\n"}})
+    assert extract_candidate_files(raw, "package") == {"candidate/a.py": "x = 1\n"}
+    fenced = f"```json\n{raw}\n```"
+    assert extract_candidate_files(fenced, "package") == {"candidate/a.py": "x = 1\n"}
+    # Backticks INSIDE the payload survive: only the outer fence pair goes.
+    inner = json.dumps({"files": {"a.py": 's = "```"\n'}})
+    assert extract_candidate_files(f"```\n{inner}\n```", "package") == {
+        "candidate/a.py": 's = "```"\n'
+    }
+    # Single layout is untouched: the module source passes through as-is.
+    assert extract_candidate_files("def f():\n    return 1\n", "single") == {
+        "candidate.py": "def f():\n    return 1\n"
+    }
+

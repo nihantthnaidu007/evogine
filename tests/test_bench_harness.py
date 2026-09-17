@@ -288,6 +288,8 @@ def test_bridge_maps_bench_protocol_to_swarm_protocol() -> None:
     assert response.text == "CODE"
     assert response.input_tokens == 3
     assert response.output_tokens == 4
+    # Latency is measured at the bridge (the bench protocol carries none).
+    assert response.latency_ms >= 0.0
     # The determinism block flows through; max_tokens stays the roles' concern.
     assert captured["config"].model == "m"
     assert captured["config"].temperature == 0.1
