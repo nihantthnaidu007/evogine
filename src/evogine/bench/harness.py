@@ -35,7 +35,6 @@ the same run share ``run_id``, so cold and warm candidates at the same
 
 from __future__ import annotations
 
-import hashlib
 import time
 import uuid
 from collections.abc import Mapping
@@ -45,6 +44,7 @@ from typing import Any, Literal, Protocol, TypedDict, cast
 
 from evogine.bench.task import BenchTask, load_task
 from evogine.engine.records import LearningRecord
+from evogine.swarm.determinism import derive_seed  # noqa: F401 — re-exported
 from evogine.swarm.gates_adapter import CodeGateAdapter
 from evogine.swarm.roles import ModelConfig as SwarmModelConfig
 from evogine.swarm.roles import ModelResponse as SwarmModelResponse
@@ -65,15 +65,10 @@ Arm = Literal["cold", "warm"]
 #: The determinism playbook recorded on every rollout's config block.
 PLAYBOOK = "learn_0012"
 
-
-def derive_seed(run_id: str, case_id: str, generation: int, candidate_index: int) -> str:
-    """Derive the per-record seed (learn_0012): sha256 of the record identity.
-
-    Kept for benchmark-report callers; the loop derives and records the
-    per-record seed itself (a shorter digest of the same identity).
-    """
-    payload = f"{run_id}|{case_id}|{generation}|{candidate_index}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+# The per-record seed derivation lives in :mod:`evogine.swarm.determinism`
+# and is re-exported above for benchmark-report callers: the loop derives and
+# records the seed itself, and there is exactly one canonical definition —
+# the 8-hex digest historical run data was recorded with.
 
 
 @dataclass(frozen=True)

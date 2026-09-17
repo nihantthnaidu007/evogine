@@ -39,7 +39,6 @@ engine (retrieve + propose). Tests run fakes; CI makes no API calls.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from collections.abc import Mapping
@@ -49,6 +48,7 @@ from pathlib import Path
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from evogine.engine.records import LearningRecord
+from evogine.swarm.determinism import derive_seed
 from evogine.swarm.fencing import fence_untrusted
 from evogine.swarm.promotion import (
     PromotionReport,
@@ -60,9 +60,13 @@ from evogine.swarm.promotion import (
 from evogine.swarm.roles import (
     Builder,
     ModelClient,
+    ModelResponse,
     Reflector,
     RoleCall,
     Verifier,
+    build_builder_messages,
+    build_reflector_messages,
+    build_verifier_messages,
     extract_code,
     parse_learning_draft,
     parse_verdict,
@@ -170,17 +174,6 @@ class SwarmConfig:
     arm: str = "warm"
     runs_dir: Path = Path("runs")
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
-
-
-def derive_seed(run_id: str, case_id: str, generation: int, candidate_index: int) -> str:
-    """Derive the per-record seed (learn_0012): sha256 of the record identity.
-
-    Arms of one run share ``run_id``, so candidates at the same
-    ``(generation, candidate_index)`` are seed-paired across arms — the
-    comparison isolates retrieval as the only difference.
-    """
-    payload = f"{run_id}|{case_id}|{generation}|{candidate_index}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
 
 
 @dataclass
@@ -439,10 +432,31 @@ def _generate_candidates(
 
     def unit(generation: int, candidate_index: int) -> _CandidateResult:
         seed = derive_seed(config.run_id, task.case_id, generation, candidate_index)
-        builder_call = builder.propose(task, knowledge, seed=seed)
-        extracted = extract_code(builder_call.response.text)
-        outcome, files = _evaluate_reply(extracted, task, gate)
-        verifier_call = verifier.review(task, extracted, seed=seed)
+        builder_call: RoleCall | None = None
+        extracted = ""
+        step = "builder call"
+        try:
+            builder_call = builder.propose(task, knowledge, seed=seed)
+            step = "reply extraction"
+            extracted = extract_code(builder_call.response.text)
+            step = "gate evaluation"
+            outcome, files = _evaluate_reply(extracted, task, gate)
+            step = "verifier review"
+            verifier_call = verifier.review(task, extracted, seed=seed)
+        except Exception as exc:  # noqa: BLE001 — a crashed role/plugin call costs
+            # one candidate, not the run: a model-client/API failure degrades
+            # to a recorded failing candidate (verdict ``fail`` — the
+            # never-worse bar keeps the baseline) instead of aborting the task.
+            return _degraded_candidate(
+                task=task,
+                knowledge=knowledge,
+                generation=generation,
+                candidate_index=candidate_index,
+                seed=seed,
+                builder_call=builder_call,
+                extracted=extracted,
+                detail=f"{step} failed: {type(exc).__name__}: {exc}",
+            )
         return _CandidateResult(
             generation=generation,
             candidate_index=candidate_index,
@@ -463,6 +477,55 @@ def _generate_candidates(
             pool.submit(unit, generation, index) for generation in generations for index in indexes
         ]
         return [future.result() for future in futures]
+
+
+def _degraded_candidate(
+    task: SwarmTask,
+    knowledge: list[LearningRecord],
+    generation: int,
+    candidate_index: int,
+    seed: str,
+    builder_call: RoleCall | None,
+    extracted: str,
+    detail: str,
+) -> _CandidateResult:
+    """Degrade a crashed candidate unit into a typed failed candidate.
+
+    Mirrors the gate-failure convention: verdict ``fail`` with the exception
+    recorded in ``failure_detail`` — the loop continues, the audit trail says
+    what happened, and the degraded unit can never be retained (``fail``
+    never clears the never-worse bar). Records stay honest about what ran: a
+    failed builder call is re-derived from its deterministic inputs (the same
+    prompt the call was issued with, an empty response); the verifier's slot
+    carries its issued prompt only when a review was actually attempted (the
+    builder had succeeded) and an ``unknown`` verdict — a review that never
+    ran is never fabricated as having produced one.
+    """
+    return _CandidateResult(
+        generation=generation,
+        candidate_index=candidate_index,
+        seed=seed,
+        builder=builder_call
+        or RoleCall(
+            messages=build_builder_messages(task, knowledge),
+            response=ModelResponse(text=""),
+        ),
+        extracted=extracted,
+        outcome=GateOutcome(
+            verdict="fail",
+            failure_detail=detail,
+            visible_passed=0,
+            visible_total=0,
+            properties_passed=0,
+            properties_total=0,
+        ),
+        files=None,
+        verifier=RoleCall(
+            messages=build_verifier_messages(task, extracted) if builder_call else [],
+            response=ModelResponse(text=""),
+        ),
+        verifier_verdict="unknown",
+    )
 
 
 def _evaluate_reply(
@@ -562,7 +625,32 @@ def _reflect(
     or not at all — a parse or validation failure is a recorded rollout, never
     a direct store write.
     """
-    call = reflector.diagnose(task, _render_evidence(baseline_outcome, results), seed="")
+    evidence = _render_evidence(baseline_outcome, results)
+    try:
+        call = reflector.diagnose(task, evidence, seed="")
+    except Exception as exc:  # noqa: BLE001 — boundary catch by design: a crashed
+        # reflector call is a recorded failure, not a loop crash (same
+        # convention as the candidate boundary and the rejected draft below).
+        writer.append(
+            build_rollout(
+                stage="reflector",
+                case_id=task.case_id,
+                run_id=config.run_id,
+                generation=None,
+                candidate_index=None,
+                model=config.reflector_model,
+                config={"arm": config.arm, "seed": None, "playbook": PLAYBOOK},
+                prompt_messages=build_reflector_messages(task, evidence),
+                extracted_code="",
+                verdict="fail",
+                failure_detail=f"reflector call failed: {type(exc).__name__}: {exc}",
+                ops={},
+                tokens={"input_tokens": None, "output_tokens": None},
+                reasoning_content="",
+                latency_ms=None,
+            )
+        )
+        return None
     base_fields: dict[str, Any] = {
         "stage": "reflector",
         "case_id": task.case_id,
