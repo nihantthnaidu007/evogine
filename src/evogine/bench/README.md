@@ -69,7 +69,7 @@ from candidate.queue import JobQueue         # package
      method sequence on a fresh object (how stateful pressure is pinned
      without threads); optional `construct_raises`.
 6. **No oracle in generator-visible text.** `scenario.md` and the prompt
-   templates in `bench/prompts.py` must never contain an expected value from
+   templates in `swarm/roles.py` must never contain an expected value from
    any properties.json. The scan is union-wide across the corpus.
 
 ## Harness
