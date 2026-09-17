@@ -3,9 +3,11 @@
 Two executors share one contract: write ``files`` (name -> text) into a fresh
 directory, run ``command`` there under a hard wall-clock timeout, and return a
 structured :class:`RunResult` with status (``ok`` / ``failed`` / ``crashed`` /
-``timed_out``), exit code, capped stdout/stderr, and duration. Neither executor
-knows anything about "tests", "golden I/O", or "equivalence"; that lives one
-layer up (``code_gate.py``).
+``timed_out``), exit code, capped stdout/stderr, and duration. Staged names are
+candidate input: any name that resolves outside the fresh directory is rejected
+with :class:`UnsafeCandidatePath` before a single byte is written. Neither
+executor knows anything about "tests", "golden I/O", or "equivalence"; that
+lives one layer up (``code_gate.py``).
 
 :class:`DockerSandbox` is the real boundary — a port of Darwin's locked-down
 container primitive (``sandbox_container.py``, Phase I0). Every candidate is
@@ -59,6 +61,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
 IMAGE = "evogine-sandbox:py313"  # built from docker/Dockerfile.sandbox
@@ -123,12 +126,52 @@ class SandboxUnavailable(RuntimeError):
     """The Docker boundary cannot be established (missing binary or image)."""
 
 
+class UnsafeCandidatePath(ValueError):
+    """A staged file name escapes (or cannot name a file inside) the staging root.
+
+    Raised by both executors' staging paths. Upstream callers record it as the
+    candidate's gate verdict (``swarm.runner._evaluate_reply`` catches it), so
+    a traversal attempt fails the case instead of crashing the loop.
+    """
+
+
 def _load_extra_security_opts() -> tuple[str, ...]:
     raw = os.environ.get(_EXTRA_SECURITY_OPTS_ENV, "")
     return tuple(opt.strip() for opt in raw.split(",") if opt.strip())
 
 
 EXTRA_SECURITY_OPTS = _load_extra_security_opts()
+
+
+def _staged_path(workdir: str, fname: str) -> str:
+    """Resolve ``fname`` under the staging root and refuse any escape.
+
+    The ``files`` keys are candidate-supplied, so a name is attacker input:
+    joined naively, ``candidate/../../x`` or an absolute path would land
+    OUTSIDE the staging dir — a host write before any container exists (C1,
+    v1 security review). This mirrors the resolve-under-root check in
+    ``bench/gate.py``'s ``candidate_import_context``. The staging root is a
+    fresh ``mkdtemp``, so there is no pre-existing symlink for ``resolve()``
+    to travel through. Resolving to the root itself ("" / "." / "a/..") is
+    also rejected: such a name can never open a file and would otherwise
+    surface downstream as a raw ``IsADirectoryError``.
+    """
+    if "\x00" in fname:
+        raise UnsafeCandidatePath(f"staged file name contains a null byte: {fname!r}")
+    root = Path(workdir).resolve()
+    resolved = (root / fname).resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise UnsafeCandidatePath(f"staged file name escapes the staging root: {fname!r}")
+    return str(resolved)
+
+
+def _stage_files(workdir: str, files: Mapping[str, str]) -> None:
+    """Write ``files`` (name -> text) under ``workdir``, creating parent dirs."""
+    for fname, content in files.items():
+        path = _staged_path(workdir, fname)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
 
 class DockerSandbox:
@@ -224,11 +267,7 @@ class DockerSandbox:
         uid/mode, so the widening is harmless there.
         """
         workdir = tempfile.mkdtemp(prefix="evogine_sbx_")
-        for fname, content in files.items():
-            path = os.path.join(workdir, fname)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+        _stage_files(workdir, files)
         for root, _dirs, fnames in os.walk(workdir):
             os.chmod(root, stat.S_IMODE(os.stat(root).st_mode) | 0o055)
             for fname in fnames:
@@ -412,11 +451,7 @@ class LocalSubprocessSandbox:
             command = (sys.executable, *command[1:])
         workdir = tempfile.mkdtemp(prefix="evogine_local_sbx_")
         try:
-            for fname, content in files.items():
-                path = os.path.join(workdir, fname)
-                os.makedirs(os.path.dirname(path) or workdir, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
+            _stage_files(workdir, files)
             env = {
                 **os.environ,
                 "PYTHONHASHSEED": "0",  # same determinism contract as the container
