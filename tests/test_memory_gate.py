@@ -25,8 +25,19 @@ from evogine.engine.records import (
 )
 from evogine.engine.store import Engine, InvalidTransitionError
 from evogine.gates import sandbox as sbx
-from evogine.gates.code_gate import CodeGate, GateInput, GateVerdict, GoldenCase
-from evogine.gates.memory_gate import MemoryGate, MemoryGateConfig
+from evogine.gates.code_gate import (
+    CodeGate,
+    GateInput,
+    GateResult,
+    GateVerdict,
+    GoldenCase,
+)
+from evogine.gates.memory_gate import (
+    SCAN_AUDIT_ACTION,
+    MemoryGate,
+    MemoryGateConfig,
+    find_learning_oracle_leak,
+)
 from evogine.gates.replay import (
     MAD_TO_FLOOR,
     AppliedPatch,
@@ -685,3 +696,127 @@ def test_replay_one_reports_cold_history_and_warm_repeats(tmp_path):
     assert result.material_flip is True
     assert result.material_regression is False
     assert result.warm is not None and result.warm.accepted is True
+
+
+# --------------------------------------------- promotion-time oracle-leak scan
+
+
+def test_planted_oracle_leak_in_a_learning_rejects_promotion(tmp_path):
+    """A learning carrying a golden output literal never promotes (finding 6)."""
+    engine = make_engine(tmp_path)
+    run_log = make_run_log(tmp_path)
+    record_gate_run(run_log, run_id="run_1", candidate_src=BROKEN_SRC)
+    leaky = make_learning(
+        id="learn_leak_0001",
+        body=RecordBody(
+            signal="add returns a - b; golden output for (5000, 6000) is 11000",
+            failure_mode="wrong operand order",
+            detection="counterfactual replay flips the gate verdict",
+            fix_strategy="return a + b",
+        ),
+    )
+    record = engine.propose(leaky)
+    engine.queue_replay(record.id, ["run_1"])
+
+    gate = gate_for(run_log, fixing_applier)
+    result = gate.decide(engine, record.id)
+
+    # Fail closed: the leaky learning is back to ephemeral, never promoted.
+    assert result.status == "ephemeral"
+    assert result.promoted_at is None
+    scan_entries = engine.audit.find(SCAN_AUDIT_ACTION, record.id)
+    assert len(scan_entries) == 1
+    assert scan_entries[0].actor == "memory-gate"
+    assert "golden case" in (scan_entries[0].reason or "")
+    # The engine's own rejection is audited too, carrying the scan's reason.
+    rejected = engine.audit.find("promote-rejected", record.id)
+    assert len(rejected) == 1
+    assert "oracle-leak scan" in (rejected[0].reason or "")
+    # The scan runs before the replay: no measurement is spent on a leaky draft.
+    assert engine.audit.find("replay", record.id) == []
+
+
+def test_oracle_scan_error_rejects_promotion_fail_closed(tmp_path, monkeypatch):
+    """A broken scanner rejects — unscanned text never promotes."""
+    engine = make_engine(tmp_path)
+    run_log = make_run_log(tmp_path)
+    record_gate_run(run_log, run_id="run_1", candidate_src=BROKEN_SRC)
+    record = engine.propose(make_learning(id="learn_scanerr_0001"))
+    engine.queue_replay(record.id, ["run_1"])
+
+    def broken_scanner(record, runs):
+        raise RuntimeError("scanner exploded")
+
+    monkeypatch.setattr("evogine.gates.memory_gate.find_learning_oracle_leak", broken_scanner)
+    gate = gate_for(run_log, fixing_applier)
+    result = gate.decide(engine, record.id)
+
+    assert result.status == "ephemeral"
+    scan_entries = engine.audit.find(SCAN_AUDIT_ACTION, record.id)
+    assert len(scan_entries) == 1
+    assert "scan error" in (scan_entries[0].reason or "")
+    assert "fail-closed" in (scan_entries[0].reason or "")
+    assert engine.audit.find("replay", record.id) == []
+
+
+def test_clean_learning_still_promotes_under_the_scan(tmp_path):
+    """The scan changes nothing for a leak-free learning."""
+    engine = make_engine(tmp_path)
+    run_log = make_run_log(tmp_path)
+    record_gate_run(run_log, run_id="run_1", candidate_src=BROKEN_SRC)
+    record = engine.propose(make_learning())
+    engine.queue_replay(record.id, ["run_1"])
+
+    gate = gate_for(run_log, fixing_applier)
+    result = gate.decide(engine, record.id)
+
+    assert result.status == "promoted"
+    assert result.promoted_at is not None
+    assert engine.audit.find(SCAN_AUDIT_ACTION, record.id) == []
+    # the promotion trail is the usual replay + promote pair
+    assert len(engine.audit.find("replay", record.id)) == 1
+    assert len(engine.audit.find("promote", record.id)) == 1
+
+
+def test_learning_leak_scan_covers_body_fields_title_and_provenance(tmp_path):
+    run_log = make_run_log(tmp_path)
+    record_gate_run(run_log, run_id="run_1", candidate_src=BROKEN_SRC)
+    run = run_log.get("run_1")
+
+    def learning_with(field: str, text: str) -> LearningRecord:
+        body = RecordBody(signal="", failure_mode="", detection="", fix_strategy="")
+        if field == "title":
+            return make_learning(id="learn_cover_0001", title=text, body=body)
+        return make_learning(id="learn_cover_0001", body=body.model_copy(update={field: text}))
+
+    for field in ("title", "signal", "failure_mode", "detection", "fix_strategy"):
+        leaky = learning_with(field, "the golden output is 333333, memorize it")
+        assert find_learning_oracle_leak(leaky, [run]) is not None, field
+    for provenance_field in ("source", "note"):
+        leaky = learning_with("signal", "")
+        leaky = leaky.model_copy(
+            update={
+                "provenance": leaky.provenance.model_copy(
+                    update={provenance_field: "echo 333333 back"}
+                )
+            }
+        )
+        assert find_learning_oracle_leak(leaky, [run]) is not None, provenance_field
+    # A learning that never carries a golden literal scans clean.
+    assert find_learning_oracle_leak(make_learning(), [run]) is None
+
+
+def test_learning_leak_scan_needs_golden_material_to_scan_against(tmp_path):
+    """Multi-file runs carry no golden I/O oracle: nothing to scan against."""
+    gate_input = GateInput(
+        scope="multi-file",
+        baseline_files={"__init__.py": ""},
+        candidate_files={"unit.py": "class X: ..."},
+        entry_class="X",
+        corpus_source="corpus",
+    )
+    cold = GateResult(verdict=GateVerdict.PASS_TESTS, accepted=True, gate=None, reason="")
+    run = RecordedRun(run_id="run_m", case_id="c", gate_input=gate_input, cold=cold)
+    leaky_body = RecordBody(signal="333333", failure_mode="", detection="", fix_strategy="")
+    leaky = make_learning(body=leaky_body)
+    assert find_learning_oracle_leak(leaky, [run]) is None
