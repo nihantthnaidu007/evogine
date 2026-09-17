@@ -12,6 +12,13 @@ name: CI
 # the tests' literal skipif condition is satisfied, and runs exactly the
 # Docker-gated tests. No secrets: the sandbox has no network and the suite
 # makes no live API calls.
+#
+# The gitleaks job scans the full repository history for leaked secrets on
+# every push and pull request. Checkout uses fetch-depth: 0 because a default
+# shallow clone would leave push-event scans covering only the newest commit
+# instead of the full history. The action is pinned by commit SHA (the commit
+# the v2 tag points at), not the moving tag. No secrets introduced: the only
+# token passed is the workflow's own GITHUB_TOKEN.
 on:
   push:
     branches: [main]
@@ -77,3 +84,22 @@ jobs:
             echo "::error::Docker-gated tests were skipped despite the built sandbox image — failing the job"
             exit 1
           fi
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # Full history is required: on push events a shallow clone would
+          # leave the scan covering only the newest commit, not the whole
+          # history (the pull_request trigger scans the PR's full diff range).
+          fetch-depth: 0
+
+      # Pin by the commit SHA the v2 tag resolves to, not the tag: a mutable
+      # tag could silently swap the code that scans for (or approves) secrets.
+      - name: Scan full history for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          # The workflow's own token; the action uses it for GitHub API access.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
