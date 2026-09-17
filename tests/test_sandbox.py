@@ -2,7 +2,10 @@
 the pinned lockdown argv (ported tier-a from Darwin's test_sandbox_argv.py),
 and Docker-gated smoke tests that skip when the boundary is unavailable."""
 
+import shutil
 import signal
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -185,3 +188,119 @@ def test_docker_smoke_read_only_root():
         {"w.py": "open('/evil.txt', 'w')"}, ["python", "w.py"], timeout=10.0
     )
     assert res.status is not sbx.RunStatus.OK
+
+
+# ================================== tier a: staging path safety (C1, v1 review)
+
+
+# The legit layouts the corpus actually stages — including the two
+# package-layout cases (nested candidate/ trees with __init__.py and
+# subpackages). These must keep staging and running.
+LEGIT_PACKAGE_FILES = {
+    "candidate/__init__.py": "",
+    "candidate/account.py": "VALUE = 1",
+    "candidate/sub/__init__.py": "",
+    "candidate/sub/module.py": "VALUE = 2",
+}
+
+# Candidate-supplied names that resolve OUTSIDE (or onto) the staging root.
+ESCAPING_FILENAMES = [
+    "candidate/../../evil.txt",  # traversal through the package prefix
+    "../evil.txt",  # direct parent escape
+    "candidate/../..",  # resolves to the staging root itself
+    "\x00evil",  # unusable name, no valid file
+]
+
+
+def test_stage_files_accepts_nested_package_layouts(tmp_path):
+    sbx._stage_files(str(tmp_path), LEGIT_PACKAGE_FILES)
+    staged = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file())
+    assert staged == [
+        "candidate/__init__.py",
+        "candidate/account.py",
+        "candidate/sub/__init__.py",
+        "candidate/sub/module.py",
+    ]
+
+
+def test_stage_files_creates_no_symlinks(tmp_path):
+    sbx._stage_files(str(tmp_path), LEGIT_PACKAGE_FILES)
+    assert all(not p.is_symlink() for p in tmp_path.rglob("*"))
+
+
+@pytest.mark.parametrize("fname", ESCAPING_FILENAMES)
+def test_stage_files_rejects_escapes_without_writes(tmp_path, fname):
+    with pytest.raises(sbx.UnsafeCandidatePath):
+        sbx._stage_files(str(tmp_path), {fname: "evil = 1"})
+    assert not (tmp_path.parent / "evil.txt").exists()
+
+
+def test_stage_files_rejects_absolute_fname(tmp_path):
+    with pytest.raises(sbx.UnsafeCandidatePath):
+        sbx._stage_files(str(tmp_path), {str(tmp_path.parent / "evil.txt"): "evil = 1"})
+    assert not (tmp_path.parent / "evil.txt").exists()
+
+
+def test_local_executor_rejects_escaping_filenames():
+    # The relative escapes resolve against the executor's own system temp
+    # workdir, so verify the probe never appeared there either.
+    probe = "evogine_c1_escape_probe.txt"
+    for fname in [*ESCAPING_FILENAMES[:-1], f"candidate/../../{probe}", f"../{probe}"]:
+        with pytest.raises(sbx.UnsafeCandidatePath):
+            LOCAL.run({fname: "evil = 1"}, ["python", "-c", "pass"], timeout=5.0)
+    assert not (Path(tempfile.gettempdir()) / probe).exists()
+
+
+def test_local_executor_rejects_absolute_fname(tmp_path):
+    with pytest.raises(sbx.UnsafeCandidatePath):
+        LOCAL.run(
+            {str(tmp_path.parent / "evil.txt"): "evil = 1"},
+            ["python", "-c", "pass"],
+            timeout=5.0,
+        )
+    assert not (tmp_path.parent / "evil.txt").exists()
+
+
+def test_local_executor_runs_nested_package_layout():
+    files = {
+        **LEGIT_PACKAGE_FILES,
+        "main.py": (
+            "from candidate.account import VALUE\n"
+            "from candidate.sub.module import VALUE as DEEP\n"
+            "print(VALUE, DEEP)"
+        ),
+    }
+    res = LOCAL.run(files, ["python", "main.py"], timeout=5.0)
+    assert res.status is sbx.RunStatus.OK
+    assert res.stdout.strip() == "1 2"
+
+
+def test_docker_stage_rejects_escaping_filenames():
+    # _stage is host-side code that runs before any container exists, so it is
+    # testable without Docker.
+    probe = "evogine_c1_escape_probe.txt"
+    for fname in [f"candidate/../../{probe}", f"../{probe}", "candidate/../.."]:
+        with pytest.raises(sbx.UnsafeCandidatePath):
+            sbx.DockerSandbox._stage({fname: "evil = 1"})
+    assert not (Path(tempfile.gettempdir()) / probe).exists()
+
+
+def test_docker_stage_accepts_nested_package_layouts_without_symlinks():
+    workdir = sbx.DockerSandbox._stage(LEGIT_PACKAGE_FILES)
+    try:
+        root = Path(workdir)
+        staged = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+        assert staged == sorted(LEGIT_PACKAGE_FILES)
+        assert all(not p.is_symlink() for p in root.rglob("*"))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@_docker_mark
+def test_docker_run_rejects_escape_before_any_container():
+    probe = "evogine_c1_escape_probe.txt"
+    with pytest.raises(sbx.UnsafeCandidatePath):
+        sbx.DockerSandbox().run(
+            {f"candidate/../../{probe}": "evil = 1"}, ["python", "-c", "pass"], timeout=10.0
+        )
+    assert not (Path(tempfile.gettempdir()) / probe).exists()
