@@ -507,7 +507,11 @@ class AnthropicModel:
             model=model_config.model,
             max_tokens=model_config.max_tokens,
             messages=turns,
-            temperature=temperature,
+            # anthropic>=1.6 dropped the typed ``temperature`` kwarg while the
+            # API itself still honors it, so the playbook pins it through
+            # extra_body (verified live); the recorded config block stays the
+            # learn_0012 provenance.
+            extra_body={"temperature": temperature},
             thinking=thinking,
             **({"system": system} if system is not None else {}),
         )
