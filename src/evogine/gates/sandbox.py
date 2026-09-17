@@ -73,7 +73,12 @@ CPUS = "1.0"  # at most one core
 PIDS = 128  # process cap; contains fork bombs
 
 # Bound the host-side waits so nothing can hang us. _STARTUP_GRACE covers
-# image-start latency so a slow-starting legit candidate is not killed early.
+# startup latency — the docker client's image/container start, or the local
+# executor's interpreter/pytest import time — so a slow-starting legit
+# candidate is not classified TIMED_OUT: the wall clock a client process gets
+# is timeout + grace, and only a process still running past THAT is genuinely
+# hung. The grace moves the classification boundary only; it never converts a
+# real timeout into a pass.
 _STARTUP_GRACE = 1.0
 _OP_TIMEOUT = 15.0
 _KILL_GRACE = 5.0
@@ -451,7 +456,10 @@ class LocalSubprocessSandbox:
     """Plain local subprocess executor — **NOT a security boundary**.
 
     Provides the same RunResult contract and timeout discipline as
-    DockerSandbox so the gate logic is executor-agnostic, but the command runs
+    DockerSandbox — including the ``_STARTUP_GRACE`` window: interpreter and
+    pytest startup latency do not count against the hard timeout, and only a
+    process still running past ``timeout + _STARTUP_GRACE`` is classified
+    TIMED_OUT — so the gate logic is executor-agnostic, but the command runs
     as an ordinary local process with full host access. Only run TRUSTED code
     here (test fixtures, trusted baseline measurement); never untrusted
     candidate code in production — use DockerSandbox.
@@ -489,7 +497,11 @@ class LocalSubprocessSandbox:
                 start_new_session=True,  # own process group, so teardown can kill it all
             )
             try:
-                out, err = proc.communicate(timeout=timeout)
+                # Same grace as DockerSandbox: interpreter/pytest startup does
+                # not consume the candidate's hard timeout — only a process
+                # still running past timeout + _STARTUP_GRACE is genuinely
+                # hung and reads TIMED_OUT.
+                out, err = proc.communicate(timeout=timeout + _STARTUP_GRACE)
             except subprocess.TimeoutExpired:
                 # Kill the whole group: a breakaway grandchild must not hold our
                 # pipes or outlive the timeout.

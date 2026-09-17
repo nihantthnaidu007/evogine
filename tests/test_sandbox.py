@@ -140,6 +140,40 @@ def test_local_timed_out():
     assert res.duration < 30  # the group kill bounds the wait
 
 
+def test_local_startup_latency_within_grace_does_not_flip_classification(monkeypatch):
+    """The local executor's _STARTUP_GRACE mirrors DockerSandbox's: interpreter
+    and pytest startup do not consume the hard timeout. Pinned both ways for
+    determinism — with the grace zeroed, the startup-inclusive clock fires
+    (the old semantics); with the grace granted, the same candidate that
+    finishes past `timeout` but within `timeout + grace` classifies by its
+    exit code, never TIMED_OUT."""
+    slow_start = "import time; time.sleep(1.5); print('done')"
+    monkeypatch.setattr(sbx, "_STARTUP_GRACE", 0.0)
+    res = LOCAL.run({"slow.py": slow_start}, ["python", "slow.py"], timeout=0.5)
+    assert res.status is sbx.RunStatus.TIMED_OUT  # old, startup-inclusive boundary
+
+    monkeypatch.setattr(sbx, "_STARTUP_GRACE", 30.0)
+    res = LOCAL.run({"slow.py": slow_start}, ["python", "slow.py"], timeout=0.5)
+    assert res.status is sbx.RunStatus.OK
+    assert res.exit_code == 0
+    assert res.stdout.strip() == "done"
+    assert res.duration >= 0.5  # startup latency exceeded the nominal timeout…
+    assert not res.timed_out  # …yet the run is a pass, not a timeout
+
+
+def test_local_genuinely_hung_process_still_times_out_beyond_grace():
+    """Fail-closed invariant: the grace only removes startup latency from the
+    classification. A process that hangs beyond timeout + grace still reads
+    TIMED_OUT with a bounded wait — the grace never converts a hang into a
+    pass."""
+    res = LOCAL.run({"hang.py": "import time; time.sleep(60)"}, ["python", "hang.py"], timeout=1.0)
+    assert res.status is sbx.RunStatus.TIMED_OUT
+    assert res.exit_code is None
+    assert res.timed_out
+    assert res.duration >= 1.0 + sbx._STARTUP_GRACE  # fired past the grace, not inside it
+    assert res.duration < 60  # the group kill bounds the wait
+
+
 def test_local_stages_nested_files():
     res = LOCAL.run(
         {"pkg/mod.py": "X = 1", "main.py": "from pkg.mod import X; print(X)"},
