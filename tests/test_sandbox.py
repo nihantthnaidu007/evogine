@@ -5,6 +5,7 @@ and Docker-gated smoke tests that skip when the boundary is unavailable."""
 import os
 import shutil
 import signal
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -368,3 +369,167 @@ def test_local_executor_runs_sufficiently_with_allowlist():
     )
     assert res.status is sbx.RunStatus.OK
     assert res.stdout.strip().startswith("2 0 ")  # VALUE=2, PYTHONHASHSEED pinned to 0
+
+
+# ================================== tier a: docker error branches via fakes
+#
+# Audit finding: the docker CLI's error branches were untested — the
+# containerd inspect false-negative fallback in _require_image, the _docker
+# timeout/launch-failure returns, the unreadable-inspect fallback in run(),
+# and the OOM -> CRASHED mapping. The module-level _docker (and Popen for the
+# run-level tests) is faked, so no Docker daemon is ever invoked.
+
+
+def test_require_image_present_by_tag_is_happy_path(monkeypatch):
+    seen = []
+
+    def fake_docker(args):
+        seen.append(args)
+        return (0, "", "")
+
+    monkeypatch.setattr(sbx, "_docker", fake_docker)
+    sbx.DockerSandbox._require_image(sbx.IMAGE)  # must not raise
+    assert seen == [["image", "inspect", sbx.IMAGE]]  # ls is the fallback, not the norm
+
+
+def test_require_image_survives_containerd_inspect_false_negative(monkeypatch):
+    """inspect-by-tag can false-negative under containerd image storage: a
+    non-zero inspect must NOT abort — the ls fallback resolves the image."""
+
+    def fake_docker(args):
+        if args[:2] == ["image", "inspect"]:
+            return (1, "", "no such image")
+        assert args[:2] == ["image", "ls"]
+        return (0, f"{sbx.IMAGE}\nother:latest", "")
+
+    monkeypatch.setattr(sbx, "_docker", fake_docker)
+    sbx.DockerSandbox._require_image(sbx.IMAGE)  # must not raise
+
+
+def test_require_image_raises_sandbox_unavailable(monkeypatch):
+    def fake_docker(args):
+        return (1, "", "not found")
+
+    monkeypatch.setattr(sbx, "_docker", fake_docker)
+    with pytest.raises(sbx.SandboxUnavailable, match="docker build"):
+        sbx.DockerSandbox._require_image(sbx.IMAGE)
+
+
+def test_require_image_raises_when_ls_finds_a_different_image(monkeypatch):
+    """The ls fallback must actually match the image, not just succeed."""
+
+    def fake_docker(args):
+        if args[:2] == ["image", "inspect"]:
+            return (1, "", "no such image")
+        return (0, "unrelated:latest", "")
+
+    monkeypatch.setattr(sbx, "_docker", fake_docker)
+    with pytest.raises(sbx.SandboxUnavailable):
+        sbx.DockerSandbox._require_image(sbx.IMAGE)
+
+
+def test_docker_timeout_returns_rc_124(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=30)
+
+    monkeypatch.setattr(sbx.subprocess, "run", fake_run)
+    assert sbx._docker(["image", "inspect", "x"]) == (124, "", "docker timed out")
+
+
+def test_docker_launch_failure_returns_rc_125(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "docker")
+
+    monkeypatch.setattr(sbx.subprocess, "run", fake_run)
+    rc, out, err = sbx._docker(["image", "inspect", "x"])
+    assert rc == 125
+    assert out == ""
+    assert "No such file or directory" in err
+
+
+def test_inspect_unreadable_returns_none_false(monkeypatch):
+    monkeypatch.setattr(sbx, "_docker", lambda args: (125, "", "daemon down"))
+    assert sbx._inspect("c") == (None, False)
+
+
+def test_inspect_malformed_output_returns_none_false(monkeypatch):
+    monkeypatch.setattr(sbx, "_docker", lambda args: (0, "0", ""))  # one part, not two
+    assert sbx._inspect("c") == (None, False)
+    monkeypatch.setattr(sbx, "_docker", lambda args: (0, "x true", ""))  # non-integer code
+    assert sbx._inspect("c") == (None, False)
+
+
+def test_inspect_parses_exit_code_and_oom_flag(monkeypatch):
+    monkeypatch.setattr(sbx, "_docker", lambda args: (0, "0 false", ""))
+    assert sbx._inspect("c") == (0, False)
+    monkeypatch.setattr(sbx, "_docker", lambda args: (0, "137 true", ""))
+    assert sbx._inspect("c") == (137, True)
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "oom", "expected"),
+    [
+        (0, False, sbx.RunStatus.OK),
+        (1, False, sbx.RunStatus.FAILED),
+        (127, False, sbx.RunStatus.FAILED),  # docker infra errors stay < 128
+        (137, False, sbx.RunStatus.CRASHED),  # OOM kill: SIGKILL -> 137 even without the flag
+        (143, False, sbx.RunStatus.CRASHED),  # SIGTERM death
+        (None, False, sbx.RunStatus.CRASHED),  # unknown exit: fail closed as abnormal
+        (1, True, sbx.RunStatus.CRASHED),  # the OOM flag dominates
+        (0, True, sbx.RunStatus.CRASHED),
+    ],
+)
+def test_classify_maps_exit_codes(exit_code, oom, expected):
+    assert sbx._classify(exit_code, oom) is expected
+
+
+class _FakeProc:
+    """A finished `docker run` client: communicate() returns immediately."""
+
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+        self.pid = 0
+
+    def communicate(self, timeout: float | None = None) -> tuple[None, None]:
+        return (None, None)
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+    def kill(self) -> None:
+        pass
+
+
+def test_run_falls_back_to_client_exit_code_when_inspect_unreadable(monkeypatch):
+    """A failing `docker inspect` must not crash run(): the docker CLIENT's
+    own return code decides the status instead, and the run still completes
+    with teardown."""
+
+    def fake_docker(args):
+        if args[0] == "inspect":  # container inspect: force the error branch
+            return (125, "", "cannot connect to the daemon")
+        return (0, "", "")  # image inspect (require_image) and rm
+
+    monkeypatch.setattr(sbx, "_docker", fake_docker)
+    monkeypatch.setattr(sbx.subprocess, "Popen", lambda *args, **kwargs: _FakeProc(returncode=0))
+    res = sbx.DockerSandbox().run({"hello.py": "print('hi')"}, ["python", "hello.py"], timeout=5.0)
+    assert res.status is sbx.RunStatus.OK
+    assert res.exit_code == 0
+    assert res.oom_killed is False
+
+
+def test_run_reports_oom_crash_from_inspect(monkeypatch):
+    """When inspect IS readable it is authoritative: a 137/true reading maps to
+    CRASHED with the OOM flag set, even though the client exited 0."""
+
+    def fake_docker(args):
+        if args[0] == "inspect":
+            return (0, "137 true", "")
+        return (0, "", "")
+
+    monkeypatch.setattr(sbx, "_docker", fake_docker)
+    monkeypatch.setattr(sbx.subprocess, "Popen", lambda *args, **kwargs: _FakeProc(returncode=0))
+    res = sbx.DockerSandbox().run({"hello.py": "print('hi')"}, ["python", "hello.py"], timeout=5.0)
+    assert res.status is sbx.RunStatus.CRASHED
+    assert res.exit_code == 137
+    assert res.oom_killed is True

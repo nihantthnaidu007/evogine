@@ -6,8 +6,8 @@ isolation behavior is exercised in test_sandbox.py."""
 
 import pytest
 
+from evogine.gates import equivalence, verifier
 from evogine.gates import sandbox as sbx
-from evogine.gates import verifier
 from evogine.gates.code_gate import (
     CodeGate,
     GateInput,
@@ -193,7 +193,10 @@ def test_gate_rejects_timeout():
 
 
 def test_gate_rejects_failing_tests():
-    res = _single(FAILING_SRC)
+    # Wide window: the sandbox's timeout covers the whole pytest lifecycle
+    # (interpreter + pytest startup + run), so a loaded CI runner must not
+    # turn a healthy failing run into TIMED_OUT.
+    res = _single(FAILING_SRC, timeout=15.0)
     assert res.verdict is GateVerdict.FAIL_TESTS
     assert res.gate == "tests"
     assert res.reason.startswith("pytest:")
@@ -201,9 +204,20 @@ def test_gate_rejects_failing_tests():
 
 
 def test_gate_rejects_crashing_candidate():
-    res = _single(CRASH_SRC)
-    assert res.verdict is GateVerdict.FAIL_SANDBOX
+    """A crashing candidate is rejected — rerun-independent.
+
+    The local sandbox's wall clock spans the whole pytest lifecycle, so a
+    loaded CI runner can burn the window on startup before the abort fires:
+    the run then reads TIMED_OUT (FAIL_TIMEOUT) instead of CRASHED
+    (FAIL_SANDBOX). Both are rejections — the gate never passes a crash —
+    and the strict CRASH -> FAIL_SANDBOX mapping is pinned executor-free in
+    test_gate_maps_replay_crash_to_fail_sandbox. The wide window keeps the
+    crash reading as the one that actually fires here.
+    """
+    res = _single(CRASH_SRC, timeout=30.0)
     assert res.accepted is False
+    assert res.verdict in (GateVerdict.FAIL_SANDBOX, GateVerdict.FAIL_TIMEOUT)
+    assert res.returned_files == {"candidate.py": BASELINE_SRC}
 
 
 # ------------------------------------------------------------------ multi-file
@@ -332,3 +346,186 @@ def test_compare_to_baseline_multi_file_rides_on_equivalence():
     assert ok is True
     ok, reason = compare_to_baseline("multi-file", None, None, equivalent=False)
     assert ok is False and "not equivalent" in reason
+
+
+# ------------------------------------------------------------ fail-closed faults
+#
+# Audit finding: nothing pinned the mapping from upstream verification faults
+# to the gate's FAIL verdicts — a crashing, timing-out, or erroring verifier or
+# replay must reject, never pass. The stage functions are stubbed to raise, so
+# these tests need no executor, no subprocess, and no Docker daemon; the real
+# fault paths (crashing/timing-out candidates) are covered above through the
+# local executor.
+
+
+def _stub(result):
+    """Replace an equivalence stage function: return ``result``, or raise it
+    when it is an exception instance."""
+
+    def stub(*_args, **_kwargs):
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    return stub
+
+
+def _ops_stub(plan):
+    """Replace verifier.measure_ops with a plan: one entry per call (an int to
+    return, or an exception to raise), repeating the last entry if exhausted."""
+    calls = {"n": 0}
+
+    def stub(*_args, **_kwargs):
+        item = plan[min(calls["n"], len(plan) - 1)]
+        calls["n"] += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    return stub
+
+
+def _suiteless_single():
+    """A suite-less single-function input: stage 1 is skipped and the fault is
+    injected downstream, so the outcome rides entirely on the mapping under
+    test."""
+    return GATE.evaluate(
+        GateInput(
+            scope="single-function",
+            baseline_files={"candidate.py": BASELINE_SRC},
+            candidate_files={"candidate.py": GOOD_SRC},
+            entry_point="add",
+            test_suite=None,
+            golden_cases=GOLDEN_CASES,
+        ),
+        timeout=3.0,
+    )
+
+
+def test_gate_maps_replay_crash_to_fail_sandbox(monkeypatch):
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub(equivalence.ReplayCrash("replay died"))
+    )
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.FAIL_SANDBOX
+    assert res.gate == "equivalence"
+    assert res.accepted is False
+    assert res.returned_files == {"candidate.py": BASELINE_SRC}
+    assert res.to_dict()["returned"] == "baseline"
+    assert res.candidate_ops is None and res.baseline_ops is None
+
+
+def test_gate_maps_replay_timeout_to_fail_timeout(monkeypatch):
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub(equivalence.ReplayTimeout("replay slow"))
+    )
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.FAIL_TIMEOUT
+    assert res.gate == "equivalence"
+    assert res.accepted is False
+    assert res.returned_files == {"candidate.py": BASELINE_SRC}
+
+
+def test_gate_maps_replay_error_to_fail_equivalence(monkeypatch):
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub(equivalence.ReplayError("bad frame"))
+    )
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.FAIL_EQUIVALENCE
+    assert res.gate == "equivalence"
+    assert res.accepted is False
+    assert res.returned_files == {"candidate.py": BASELINE_SRC}
+
+
+def test_gate_maps_unit_replay_crash_to_fail_sandbox(monkeypatch):
+    """The multi-file try block shares the fault mapping: a unit replay that
+    crashes the executor is FAIL_SANDBOX, never a pass."""
+    monkeypatch.setattr(
+        equivalence, "check_unit_equivalence", _stub(equivalence.ReplayCrash("unit died"))
+    )
+    res = GATE.evaluate(
+        GateInput.multi_file(
+            baseline_files=BASELINE_UNIT,
+            candidate_files=EQUIV_UNIT,
+            entry_class="Calc",
+            corpus_source=CORPUS,
+        ),
+        timeout=3.0,
+    )
+    assert res.verdict is GateVerdict.FAIL_SANDBOX
+    assert res.gate == "equivalence"
+    assert res.accepted is False
+    assert res.returned_files == BASELINE_UNIT
+
+
+def test_gate_maps_verifier_timeout_on_candidate_to_fail_timeout(monkeypatch):
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub((True, None, {"cases": 3}))
+    )
+    monkeypatch.setattr(
+        verifier, "measure_ops", _ops_stub([verifier.VerifierTimeout("ops timed out")])
+    )
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.FAIL_TIMEOUT
+    assert res.gate == "baseline"
+    assert res.accepted is False
+    assert res.candidate_ops is None and res.baseline_ops is None
+
+
+def test_gate_maps_verifier_error_on_candidate_to_fail_sandbox(monkeypatch):
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub((True, None, {"cases": 3}))
+    )
+    monkeypatch.setattr(verifier, "measure_ops", _ops_stub([verifier.VerifierError("ops broke")]))
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.FAIL_SANDBOX
+    assert res.gate == "baseline"
+    assert res.accepted is False
+
+
+def test_gate_maps_verifier_timeout_on_baseline_to_fail_timeout(monkeypatch):
+    """The baseline measurement is equally fail-closed: a timed-out incumbent
+    op count rejects, it never defaults to a pass."""
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub((True, None, {"cases": 3}))
+    )
+    monkeypatch.setattr(
+        verifier, "measure_ops", _ops_stub([10, verifier.VerifierTimeout("baseline slow")])
+    )
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.FAIL_TIMEOUT
+    assert res.gate == "baseline"
+    assert res.accepted is False
+
+
+def test_gate_maps_verifier_error_on_baseline_to_fail_sandbox(monkeypatch):
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub((True, None, {"cases": 3}))
+    )
+    monkeypatch.setattr(
+        verifier, "measure_ops", _ops_stub([10, verifier.VerifierError("baseline broke")])
+    )
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.FAIL_SANDBOX
+    assert res.gate == "baseline"
+    assert res.accepted is False
+
+
+def test_gate_keeps_baseline_verifier_crash_vacuous(monkeypatch):
+    """The ONE documented asymmetry: VerifierCodeError on the BASELINE side is
+    the incumbent crashing on the replay inputs — the very decay the benchmark
+    measures — so the ops bar is vacuous and the equivalent candidate is
+    accepted. Candidate-side and environment faults above stay fail-closed."""
+    monkeypatch.setattr(
+        equivalence, "check_function_equivalence", _stub((True, None, {"cases": 3}))
+    )
+    monkeypatch.setattr(
+        verifier, "measure_ops", _ops_stub([10, verifier.VerifierCodeError("baseline raised")])
+    )
+    res = _suiteless_single()
+    assert res.verdict is GateVerdict.PASS_TESTS
+    assert res.accepted is True
+    assert res.gate is None
+    assert res.candidate_ops == 10
+    assert res.baseline_ops is None
+    assert res.returned_files == {"candidate.py": GOOD_SRC}
