@@ -188,7 +188,9 @@ class Engine:
         updated = record.model_copy(
             update={
                 "status": _CANDIDATE,
-                "counterfactual": record.counterfactual.model_copy(update={"replay_run_ids": merged}),
+                "counterfactual": record.counterfactual.model_copy(
+                    update={"replay_run_ids": merged}
+                ),
             }
         )
         self._write_record_file(updated)
@@ -201,27 +203,40 @@ class Engine:
         self._commit(f"queue-replay: {learning_id} (status={_CANDIDATE}, runs={len(run_ids)})")
         self._records[learning_id] = updated
 
-    def promote(self, learning_id: str, replay_evidence: RecordCounterfactual) -> LearningRecord:
+    def promote(
+        self,
+        learning_id: str,
+        replay_evidence: RecordCounterfactual,
+        *,
+        reject_reason: str | None = None,
+    ) -> LearningRecord:
         """Promote ``learning_id`` to ``promoted`` given passing replay evidence.
 
         Promotion happens only when ``replay_evidence`` shows a verdict
         change and its evidence set meets the engine's materiality
-        threshold. A rejected promotion leaves the record ``ephemeral``,
-        records the rejection reason in the audit log, commits that audit
-        entry, and returns the unchanged record — the audit log shows the
-        gate worked. The stamped ``counterfactual`` on a promotion carries
-        exactly the evidence the decision was made on.
+        threshold. ``reject_reason`` lets a gate refuse a promotion on a
+        precondition of its own (e.g. the memory gate's promotion-time
+        oracle-leak scan) while the engine still owns the write, the audit
+        entry, and the commit. A rejected promotion leaves the record
+        ``ephemeral``, records the rejection reason in the audit log,
+        commits that audit entry, and returns the unchanged record — the
+        audit log shows the gate worked. The stamped ``counterfactual`` on
+        a promotion carries exactly the evidence the decision was made on.
         """
         record = self._get(learning_id)
         if record.status == _DROPPED:
-            self._refuse_transition(record, "promote", "record is dropped (terminal); promotion refused")
+            self._refuse_transition(
+                record, "promote", "record is dropped (terminal); promotion refused"
+            )
         if record.status == _PROMOTED:
             self._refuse_transition(record, "promote", "record is already promoted")
         runs = len(replay_evidence.replay_run_ids)
         evidence_summary = f"verdict_change={replay_evidence.verdict_change}; replayed_runs={runs}"
         if replay_evidence.verdict_change is not True:
             return self._reject_promotion(
-                record, replay_evidence, f"replay evidence shows no verdict change ({evidence_summary})"
+                record,
+                replay_evidence,
+                reject_reason or f"replay evidence shows no verdict change ({evidence_summary})",
             )
         if runs < self.materiality_threshold:
             return self._reject_promotion(

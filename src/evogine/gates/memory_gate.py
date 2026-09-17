@@ -39,10 +39,11 @@ exactly that failure at engine scale.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from evogine.engine.records import LearningRecord
+from evogine.engine.records import LearningRecord, RecordCounterfactual
 from evogine.engine.store import Engine
-from evogine.gates.code_gate import CodeGate, Executor
+from evogine.gates.code_gate import CodeGate, Executor, find_oracle_leak
 from evogine.gates.replay import (
     MAD_TO_FLOOR,
     LearningApplier,
@@ -51,9 +52,40 @@ from evogine.gates.replay import (
     replay_one,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from evogine.gates.code_gate import GoldenCase
+    from evogine.gates.replay import RecordedRun
+
 #: The engine's audit actor for memory-gate measurements, distinct from the
 #: engine's own ``engine`` actor so the trail shows who measured and who ruled.
 GATE_ACTOR = "memory-gate"
+
+#: The engine's audit action for the promotion-time oracle-leak scan: recorded
+#: when the scan finds oracle material in a learning (or fails), never on a
+#: clean scan — a clean promotion's trail is the existing replay + promote pair.
+SCAN_AUDIT_ACTION = "oracle-leak-scan"
+
+
+def find_learning_oracle_leak(record: LearningRecord, runs: Sequence[RecordedRun]) -> str | None:
+    """Return a rejection reason when ``record``'s text carries oracle material.
+
+    The promotion-time twin of the code gate's candidate scan (finding 6): a
+    prompt-injected or crafted oracle leak inside a learning must not ride a
+    promotion into every subsequent warm builder prompt. Same
+    :func:`find_oracle_leak` semantics — repr and JSON forms of each golden
+    output, below-distinguishable literals skipped — adapted to the other
+    injection surface: the learning text promotion would publish, scanned
+    against the golden material of the replayed runs (the runs the learning's
+    promotion evidence rests on). Multi-file runs carry no golden I/O oracle,
+    so they contribute nothing to scan against.
+    """
+    golden_cases: list[GoldenCase] = [case for run in runs for case in run.gate_input.golden_cases]
+    if not golden_cases:
+        return None
+    leak = find_oracle_leak(record.model_dump_json(), golden_cases)
+    return None if leak is None else f"promotion-time oracle-leak scan: {leak}"
 
 
 @dataclass(frozen=True)
@@ -138,16 +170,38 @@ class MemoryGate:
         """
         return self.evaluate(record, replay_run_ids).verdict_change
 
+    def _oracle_leak_reason(self, record: LearningRecord, runs: list[RecordedRun]) -> str | None:
+        """The promotion-time oracle-leak scan, fail-closed.
+
+        Returns the rejection reason when the learning carries oracle
+        material, else ``None``. A scanner error is a rejection, not a
+        pass-through: unscanned text never promotes, and the error surfaces
+        as the recorded reason instead of being swallowed.
+        """
+        try:
+            return find_learning_oracle_leak(record, runs)
+        except Exception as error:  # noqa: BLE001 — deliberate fail-closed boundary
+            return (
+                "oracle-leak scan error: "
+                f"{type(error).__name__}: {error}; promotion rejected fail-closed"
+            )
+
     def decide(self, engine: Engine, learning_id: str) -> LearningRecord:
         """Replay the queued runs and let the engine rule on the evidence.
 
-        Reads the run ids the engine's ``queue_replay`` attached, measures
-        the counterfactual replay, records the measurement in the audit log
+        Reads the run ids the engine's ``queue_replay`` attached, scans the
+        learning text for embedded oracle material (the promotion-time
+        counterpart of the code gate's candidate scan), measures the
+        counterfactual replay, records the measurement in the audit log
         (actor ``memory-gate``), then hands the evidence to
         ``engine.promote``. A material flip promotes with the evidence
         stamped on the record; anything else is rejected by the engine — the
         record stays ephemeral and the rejection reason lands in the audit
         log. The engine remains the only writer of record status.
+
+        The oracle-leak scan runs first and is fail-closed: a detected leak
+        or a scan error rejects the promotion before any replay work, with
+        the reason recorded in the audit trail (actor ``memory-gate``).
 
         Raises:
             RecordNotFoundError: no record with that learning id.
@@ -156,6 +210,24 @@ class MemoryGate:
         """
         record = engine.get(learning_id)
         run_ids = list(record.counterfactual.replay_run_ids)
+        runs = [self._run_log.get(run_id) for run_id in run_ids]
+        leak = self._oracle_leak_reason(record, runs)
+        if leak is not None:
+            engine.audit.append(
+                SCAN_AUDIT_ACTION,
+                actor=GATE_ACTOR,
+                learning_id=learning_id,
+                reason=leak,
+            )
+            return engine.promote(
+                learning_id,
+                RecordCounterfactual(
+                    replay_run_ids=run_ids,
+                    verdict_change=False,
+                    evidence="promotion refused before replay by the oracle-leak scan",
+                ),
+                reject_reason=leak,
+            )
         evidence = self.evaluate(record, run_ids)
         engine.audit.append(
             "replay",

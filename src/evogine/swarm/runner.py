@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from evogine.engine.records import LearningRecord
+from evogine.swarm.fencing import fence_untrusted
 from evogine.swarm.promotion import (
     PromotionReport,
     PromotionWiring,
@@ -623,7 +624,10 @@ def _render_evidence(baseline_outcome: GateOutcome, results: list[_CandidateResu
 
     Failure details may name hidden property ids — that is the design: the
     reflector is the diagnosis role, and its draft reaches a builder prompt
-    only through promotion.
+    only through promotion. Candidate-derived text (the failure details:
+    captured output, exception strings, gate rejection reasons) is fenced as
+    untrusted data — see :func:`fence_untrusted` — so an injected
+    instruction cannot ride the evidence into the prompt as a directive.
     """
     lines = [
         (
@@ -638,7 +642,7 @@ def _render_evidence(baseline_outcome: GateOutcome, results: list[_CandidateResu
             f"verdict={result.outcome.verdict} "
             f"properties={result.outcome.properties_passed}/{result.outcome.properties_total} "
             f"verifier={result.verifier_verdict} "
-            f"failure={result.outcome.failure_detail or 'none'}"
+            f"failure={fence_untrusted(result.outcome.failure_detail or 'none')}"
         )
     return "\n".join(lines)
 
