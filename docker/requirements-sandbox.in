@@ -1,0 +1,4 @@
+# The in-container dependency set (docker/Dockerfile.sandbox installs the
+# compiled lock with --require-hashes). Keep this minimal: every test_suite.py
+# only needs pytest, and candidate code imports stdlib only.
+pytest
