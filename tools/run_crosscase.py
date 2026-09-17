@@ -90,7 +90,10 @@ def run_case(case: str, repeats: int, base_config: Path, provider: str | None) -
         # injected SECRET_ANTHROPIC_API_KEY before invoking this driver.
         # The console script (not `python -m evogine.cli`, which imports
         # without a __main__ guard and exits 0 as a silent no-op).
-        exe = shutil.which("evogine") or str(Path(sys.executable).parent / "evogine")
+        venv_exe = Path(sys.executable).parent / "evogine"
+        exe = str(venv_exe) if venv_exe.exists() else shutil.which("evogine")
+        if exe is None:
+            raise SystemExit("no evogine console script next to this python")
         cmd = [
             exe,
             "run",
