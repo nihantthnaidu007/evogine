@@ -1,0 +1,26 @@
+{
+  "id": "learn_0012",
+  "type": "playbook",
+  "title": "Determinism configuration: thinking off, temperature pinned, seed recorded",
+  "body": {
+    "signal": "Run-to-run output variance that contaminates paired comparisons.",
+    "failure_mode": "Phase0 measured: thinking OFF at temp0 gave 10/10 byte-identical outputs; thinking OFF at temp1 with per-record seed gave 10/10; thinking ON with a pinned seed still gave 4 distinct outputs in 10 runs (A6).",
+    "detection": "Any A/B comparison with model-driven variance in the treatment arm will under-detect or fake effects; check the config block on every rollout record before interpreting deltas.",
+    "fix_strategy": "For benchmark and replay runs: thinking OFF, temperature 0 or 1-with-seed, per-record seed = sha256(run_id|case_id|generation|candidate_index) recorded in every rollout record."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "phase0/runs/FINAL_REPORT.md section 'Setup measured facts' (Stage A, A4-A6)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

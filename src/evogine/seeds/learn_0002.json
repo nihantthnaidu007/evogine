@@ -1,0 +1,26 @@
+{
+  "id": "learn_0002",
+  "type": "failure-pattern",
+  "title": "Defensive overengineering: guards the contract never asked for",
+  "body": {
+    "signal": "Type checks, None guards, or exception handlers added for states the function's contract rules out (e.g. rejecting a negative price when the domain is non-negative, per the apply_discount floor).",
+    "failure_mode": "Bloat obscures the two or three real invariants; over-guarded code fails later refactors and hides genuine bugs under layers of noise branches.",
+    "detection": "Compare each guard against the written contract: a guard with no corresponding contract clause or test is a removal candidate.",
+    "fix_strategy": "Strip guards not required by the contract; keep the domain guards the spec names. Gate: golden I/O plus equivalence - the kept guards must still fire."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "Darwin cases/apply_discount/meta.json (category=defensive_overengineering, 5 cases)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

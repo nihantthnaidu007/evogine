@@ -24,7 +24,13 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Benchmark rollout output
+runs/
+
 # Editors / OS
 .idea/
 .vscode/
 .DS_Store
+
+# Engine runtime data (default engine data dir)
+data/

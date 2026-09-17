@@ -1,0 +1,26 @@
+{
+  "id": "learn_0007",
+  "type": "failure-pattern",
+  "title": "Verbose patterns: manual loops where idioms exist",
+  "body": {
+    "signal": "Hand-rolled accumulation, manual index management, or verbose string building where a comprehension, builtin, or f-string expresses the same logic directly.",
+    "failure_mode": "Long-winded code buries intent; each hand-rolled implementation is one more place for an off-by-one or misordered condition.",
+    "detection": "AST pattern matching for known verbose idioms (accumulator loops, manual pluralization/formatting chains, index arithmetic).",
+    "fix_strategy": "Rewrite with the idiomatic form. Gate: tests plus equivalence on the full input domain, including empty and boundary inputs."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "Darwin cases/format_duration/meta.json (category=verbose_patterns, 4 cases)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

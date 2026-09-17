@@ -1,0 +1,26 @@
+{
+  "id": "learn_0008",
+  "type": "playbook",
+  "title": "Spend fixed budget on reflection before search widening",
+  "body": {
+    "signal": "A failure the loop cannot fix by trying again; the model repeats the same mistake across generations.",
+    "failure_mode": "Beam search (k=4, m=2, cap=5, plateau=2) produced a material paired gain in only 4/10 cases; the Sonnet-reflection arm was material in 9/10 (selected) and rescued the hardest case (anagram_pairs_count) from beam's -82.4 pp to +25.4 pp above the 10.81 pp case floor.",
+    "detection": "Track whether consecutive candidates share a failure mode; if so, diagnosis beats another sample.",
+    "fix_strategy": "Route persistent failures to the reflector for root-cause diagnosis and a targeted instruction, before widening search or raising the cap."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "phase0/runs/FINAL_REPORT.md sections Q4 and Q6 (2,791 rollout records)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

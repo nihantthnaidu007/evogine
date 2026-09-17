@@ -1,0 +1,26 @@
+{
+  "id": "learn_0003",
+  "type": "failure-pattern",
+  "title": "Duplication: near-identical blocks drifting apart",
+  "body": {
+    "signal": "Copy-pasted logic repeated across branches or functions where one parameterized form suffices.",
+    "failure_mode": "Each copy must be fixed separately; the copies drift until one path is subtly wrong.",
+    "detection": "AST clone detection at statement granularity; confirm semantic identity by running the equivalence gate on the extraction.",
+    "fix_strategy": "Extract one parameterized implementation. Gate: tests plus differential equivalence - extraction must not change behavior for any input class."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "Darwin cases/income_tax/meta.json (category=duplication, 4 cases)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

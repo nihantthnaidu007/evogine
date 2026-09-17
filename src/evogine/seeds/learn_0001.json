@@ -1,0 +1,26 @@
+{
+  "id": "learn_0001",
+  "type": "failure-pattern",
+  "title": "Dead code: unreachable branches and unread symbols",
+  "body": {
+    "signal": "Unused variables, functions never called, branches guarded by conditions that cannot occur given the contract.",
+    "failure_mode": "Readers pay maintenance cost for code that never runs; dead guards rot into false confidence about coverage.",
+    "detection": "Vulture scan plus AST reachability analysis over the module; cross-check every flagged symbol against the contract and tests before deleting.",
+    "fix_strategy": "Delete the dead code; keep only symbols the contract or tests reach. Gate: full test suite plus differential equivalence at the public API."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "Darwin cases/*/meta.json (category=dead_code, 3 cases)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

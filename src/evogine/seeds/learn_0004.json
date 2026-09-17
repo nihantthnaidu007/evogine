@@ -1,0 +1,26 @@
+{
+  "id": "learn_0004",
+  "type": "failure-pattern",
+  "title": "Excessive nesting: guard pyramids hiding the real logic",
+  "body": {
+    "signal": "if/for pyramids three-plus levels deep where early returns would flatten the control flow (e.g. categorize_number's label logic).",
+    "failure_mode": "Cyclomatic complexity and mental load grow with depth; edge cases get missed in the middle levels of the pyramid.",
+    "detection": "Radon cyclomatic complexity plus a max-nesting-depth AST metric; flag functions above project thresholds.",
+    "fix_strategy": "Convert nested conditionals to early-return guard sequences; keep behavior identical under the equivalence gate."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "Darwin cases/categorize_number/meta.json (category=excessive_nesting, 3 cases)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}

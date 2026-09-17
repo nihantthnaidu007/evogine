@@ -1,0 +1,26 @@
+{
+  "id": "learn_0011",
+  "type": "playbook",
+  "title": "Passing tests is not passing the gate",
+  "body": {
+    "signal": "A candidate that satisfies the test suite yet is behaviorally or performance-worse than its baseline.",
+    "failure_mode": "In phase0's search stages, 128 of 368 passing candidates (46 percent) were worse than baseline on held-out ops; tests alone would have accepted most regressions.",
+    "detection": "Never accept on tests alone: require the differential-equivalence gate for behavior and the objective ops/structure score for non-regression, both inside the locked-down container.",
+    "fix_strategy": "Keep the never-worse rule: a candidate that fails the comparison against its baseline is rejected regardless of test status; return the baseline if nothing beats it."
+  },
+  "status": "promoted",
+  "confidence": 1.0,
+  "provenance": {
+    "proposed_by": "human",
+    "origin": "seed",
+    "source": "phase0/runs/FINAL_REPORT.md section Q4 (E6 table in STAGE_E_REPORT)",
+    "note": "Seeded from hand-authored/analyzed artifacts; promoted by human decision, not agent replay."
+  },
+  "counterfactual": {
+    "replay_run_ids": [],
+    "verdict_change": null,
+    "evidence": "N/A for seeds - promoted by human authorship at engine bootstrap."
+  },
+  "created": "2026-09-17",
+  "promoted_at": "2026-09-17"
+}
