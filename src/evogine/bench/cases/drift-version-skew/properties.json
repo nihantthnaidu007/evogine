@@ -1,0 +1,129 @@
+{
+  "case_id": "drift-version-skew",
+  "entry": "Pipeline",
+  "properties": [
+    {
+      "id": "shared-wire-schema",
+      "kind": "scenario",
+      "rows": [
+        {
+          "construct": {
+            "args": [],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "send",
+              "args": [
+                [
+                  1,
+                  2,
+                  3
+                ]
+              ],
+              "kwargs": {},
+              "expected": [
+                1,
+                2,
+                3
+              ]
+            },
+            {
+              "method": "send",
+              "args": [
+                [
+                  0
+                ]
+              ],
+              "kwargs": {},
+              "expected": [
+                0
+              ]
+            },
+            {
+              "method": "raw_decode",
+              "args": [
+                {
+                  "ver": 2,
+                  "items": [
+                    7,
+                    8
+                  ],
+                  "checksum": 15
+                }
+              ],
+              "kwargs": {},
+              "expected": [
+                7,
+                8
+              ]
+            },
+            {
+              "method": "raw_decode",
+              "args": [
+                {
+                  "ver": 2,
+                  "items": [
+                    7
+                  ],
+                  "checksum": 99
+                }
+              ],
+              "kwargs": {},
+              "raises": "ValueError"
+            },
+            {
+              "method": "raw_decode",
+              "args": [
+                {
+                  "ver": 1,
+                  "items": [
+                    9
+                  ]
+                }
+              ],
+              "kwargs": {},
+              "raises": "ValueError"
+            }
+          ]
+        },
+        {
+          "construct": {
+            "args": [],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "raw_decode",
+              "args": [
+                {
+                  "ver": 2,
+                  "items": [],
+                  "checksum": 0
+                }
+              ],
+              "kwargs": {},
+              "expected": []
+            },
+            {
+              "method": "send",
+              "args": [
+                [
+                  100,
+                  200,
+                  300
+                ]
+              ],
+              "kwargs": {},
+              "expected": [
+                100,
+                200,
+                300
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "case_id": "unicode-nfkc-key",
+  "decay_axis": "unicode-locale",
+  "difficulty": "easy",
+  "description": "Build a stable display key from user-supplied parts; compatibility equivalents must collapse to the same key."
+}

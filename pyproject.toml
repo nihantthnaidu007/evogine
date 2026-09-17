@@ -27,6 +27,30 @@ evogine = "evogine.cli:main"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Case corpus files are runtime fixtures: the benchmark gate and the corpus
+# invariants (tests/test_cases.py) are their discipline, not package lint.
+# Package-layout cases also intentionally duplicate module basenames across
+# reference/ and degraded/ trees, which import-sorting treats as one package.
+extend-exclude = ["src/evogine/bench/cases"]
+
+[tool.pytest.ini_options]
+# Case files under bench/cases/*/test_suite.py are run by the benchmark gate
+# against a `candidate` module that only exists during evaluation; they are
+# not pytest-collectable and must stay out of the normal test run.
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# The bench gate and harness evaluate candidate/model output: any exception
+# raised there is a recorded outcome (a fail verdict), not a harness crash.
+# These boundary catches are the design, not lint slips.
+"src/evogine/bench/gate.py" = ["BLE001"]
+"src/evogine/bench/harness.py" = ["BLE001"]
+
+[tool.mypy]
+# Case corpus files shadow module names by design (each evaluates as a
+# standalone `candidate` module); they are gate-validated, not type-checked.
+mypy_path = "src"
+exclude = ["cases/"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/evogine"]

@@ -1,0 +1,6 @@
+{
+  "case_id": "load-spike-shedder",
+  "decay_axis": "load-spikes",
+  "difficulty": "medium",
+  "description": "A bounded queue under a load spike must shed new offers with backpressure instead of admitting everything and lying on the gauge."
+}

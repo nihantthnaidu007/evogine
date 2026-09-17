@@ -1,0 +1,6 @@
+{
+  "case_id": "retry-storm-budget",
+  "decay_axis": "retries",
+  "difficulty": "medium",
+  "description": "A retry allowance over a sliding window must prune expired attempts so a retry storm cannot exhaust the budget forever."
+}

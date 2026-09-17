@@ -1,0 +1,123 @@
+{
+  "case_id": "load-spike-shedder",
+  "entry": "ShedQueue",
+  "properties": [
+    {
+      "id": "spike-sheds-and-gauge-is-honest",
+      "kind": "scenario",
+      "rows": [
+        {
+          "construct": {
+            "args": [
+              10
+            ],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "offer",
+              "args": [
+                "a",
+                4
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "offer",
+              "args": [
+                "b",
+                4
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "offer",
+              "args": [
+                "c",
+                4
+              ],
+              "kwargs": {},
+              "expected": false
+            },
+            {
+              "method": "load",
+              "args": [],
+              "kwargs": {},
+              "expected": 8
+            },
+            {
+              "method": "drain",
+              "args": [],
+              "kwargs": {},
+              "expected": [
+                "a",
+                "b"
+              ]
+            },
+            {
+              "method": "load",
+              "args": [],
+              "kwargs": {},
+              "expected": 0
+            }
+          ]
+        },
+        {
+          "construct": {
+            "args": [
+              8
+            ],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "offer",
+              "args": [
+                "a",
+                4
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "offer",
+              "args": [
+                "b",
+                4
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "offer",
+              "args": [
+                "c",
+                0
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "load",
+              "args": [],
+              "kwargs": {},
+              "expected": 8
+            },
+            {
+              "method": "drain",
+              "args": [],
+              "kwargs": {},
+              "expected": [
+                "a",
+                "b",
+                "c"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

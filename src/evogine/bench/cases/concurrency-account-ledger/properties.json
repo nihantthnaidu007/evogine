@@ -1,0 +1,135 @@
+{
+  "case_id": "concurrency-account-ledger",
+  "entry": "Account",
+  "properties": [
+    {
+      "id": "sequence-order-wins",
+      "kind": "scenario",
+      "rows": [
+        {
+          "construct": {
+            "args": [],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "record",
+              "args": [
+                2,
+                250
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "record",
+              "args": [
+                1,
+                100
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "reconcile",
+              "args": [],
+              "kwargs": {},
+              "expected": 250
+            },
+            {
+              "method": "pending",
+              "args": [],
+              "kwargs": {},
+              "expected": 2
+            },
+            {
+              "method": "reconcile",
+              "args": [],
+              "kwargs": {},
+              "expected": 250
+            }
+          ]
+        },
+        {
+          "construct": {
+            "args": [],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "record",
+              "args": [
+                3,
+                900
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "record",
+              "args": [
+                1,
+                100
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "record",
+              "args": [
+                2,
+                500
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "reconcile",
+              "args": [],
+              "kwargs": {},
+              "expected": 900
+            }
+          ]
+        },
+        {
+          "construct": {
+            "args": [],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "record",
+              "args": [
+                1,
+                100
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "record",
+              "args": [
+                2,
+                250
+              ],
+              "kwargs": {},
+              "expected": null
+            },
+            {
+              "method": "reconcile",
+              "args": [],
+              "kwargs": {},
+              "expected": 250
+            },
+            {
+              "method": "pending",
+              "args": [],
+              "kwargs": {},
+              "expected": 2
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

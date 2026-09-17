@@ -1,0 +1,6 @@
+{
+  "case_id": "partial-batch-write",
+  "decay_axis": "partial-failure",
+  "difficulty": "medium",
+  "description": "Batch posting must be atomic: a validation failure aborts the whole batch with nothing applied, not a silent prefix."
+}

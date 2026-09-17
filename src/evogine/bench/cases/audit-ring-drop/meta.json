@@ -1,0 +1,6 @@
+{
+  "case_id": "audit-ring-drop",
+  "decay_axis": "silent-data-corruption",
+  "difficulty": "easy",
+  "description": "An audit sink with a capacity cap must refuse at the boundary instead of silently discarding the oldest entry."
+}

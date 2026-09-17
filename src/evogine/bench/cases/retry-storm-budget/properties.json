@@ -1,0 +1,124 @@
+{
+  "case_id": "retry-storm-budget",
+  "entry": "RetryBudget",
+  "properties": [
+    {
+      "id": "budget-recovers-after-window-slides",
+      "kind": "scenario",
+      "rows": [
+        {
+          "construct": {
+            "args": [
+              3,
+              1000
+            ],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "record_attempt",
+              "args": [
+                0
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "record_attempt",
+              "args": [
+                100
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "record_attempt",
+              "args": [
+                200
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "record_attempt",
+              "args": [
+                300
+              ],
+              "kwargs": {},
+              "expected": false
+            },
+            {
+              "method": "window_load",
+              "args": [],
+              "kwargs": {},
+              "expected": 3
+            },
+            {
+              "method": "record_attempt",
+              "args": [
+                1500
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "window_load",
+              "args": [],
+              "kwargs": {},
+              "expected": 1
+            }
+          ]
+        },
+        {
+          "construct": {
+            "args": [
+              2,
+              500
+            ],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "record_attempt",
+              "args": [
+                0
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "record_attempt",
+              "args": [
+                100
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "record_attempt",
+              "args": [
+                600
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "record_attempt",
+              "args": [
+                700
+              ],
+              "kwargs": {},
+              "expected": true
+            },
+            {
+              "method": "window_load",
+              "args": [],
+              "kwargs": {},
+              "expected": 2
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

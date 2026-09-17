@@ -1,0 +1,6 @@
+{
+  "case_id": "billing-day-offset",
+  "decay_axis": "date-math",
+  "difficulty": "easy",
+  "description": "Add whole months to a billing due date, clamping the day of month to the target month's last day."
+}

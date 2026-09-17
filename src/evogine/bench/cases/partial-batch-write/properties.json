@@ -1,0 +1,87 @@
+{
+  "case_id": "partial-batch-write",
+  "entry": "BatchLedger",
+  "properties": [
+    {
+      "id": "aborted-batch-applies-nothing",
+      "kind": "scenario",
+      "rows": [
+        {
+          "construct": {
+            "args": [],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "apply_batch",
+              "args": [
+                [
+                  {
+                    "amount": 10
+                  },
+                  {
+                    "amount": 20
+                  },
+                  {
+                    "amount": "x"
+                  },
+                  {
+                    "amount": 30
+                  }
+                ]
+              ],
+              "kwargs": {},
+              "expected": {
+                "status": "aborted",
+                "failed_index": 2,
+                "applied": 0
+              }
+            },
+            {
+              "method": "snapshot",
+              "args": [],
+              "kwargs": {},
+              "expected": []
+            }
+          ]
+        },
+        {
+          "construct": {
+            "args": [],
+            "kwargs": {}
+          },
+          "steps": [
+            {
+              "method": "apply_batch",
+              "args": [
+                [
+                  {
+                    "amount": 5
+                  },
+                  {
+                    "amount": -5
+                  }
+                ]
+              ],
+              "kwargs": {},
+              "expected": {
+                "status": "committed",
+                "failed_index": null,
+                "applied": 2
+              }
+            },
+            {
+              "method": "snapshot",
+              "args": [],
+              "kwargs": {},
+              "expected": [
+                5,
+                -5
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
