@@ -60,13 +60,19 @@ phase0 schema.
 
 The `evogine` entry point drives the wired loop: `run` executes one benchmark
 case through retrieval -> builder -> the real code gate -> retention ->
-reflector and writes phase0 rollout records; `case list` and `case inspect`
-explore the corpus.
+reflector and writes phase0 rollout records; `evolve` runs the same loop warm
+**with the promotion loop wired** — every gate evaluation is recorded as a
+replayable run, the reflector's landed learning is queued against the run's
+baseline+candidate run ids, and the memory gate decides from counterfactual
+replay evidence (promote on a material verdict flip, reject into the audit
+trail otherwise), while promoted knowledge is guarded against regression on
+later runs; `case list` and `case inspect` explore the corpus.
 
 ```console
 $ evogine case list                     # case ids, one per line
 $ evogine case inspect <case_id>        # decay axis, entry point, properties
 $ evogine run --case <case_id> [--arm warm|cold] [--config <path>]
+$ evogine evolve --case <case_id> [--config <path>]   # engine-growing path
 ```
 
 `run` prints one JSON report per selected arm (both arms by default). Without

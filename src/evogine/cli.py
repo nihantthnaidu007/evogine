@@ -1,6 +1,7 @@
 """Console entry point for the ``evogine`` command.
 
     evogine run --case <id> [--arm warm|cold] [--config <path>]
+    evogine evolve --case <id> [--config <path>]
     evogine case list
     evogine case inspect <id>
 
@@ -9,6 +10,15 @@ swarm loop (:mod:`evogine.swarm.runner`), the sandboxed code-gate adapter
 (:mod:`evogine.swarm.gates_adapter`), and the git-backed learning engine —
 and writes phase0 rollout records under the configured runs directory.  It is
 deliberately thin: full benchmark sweeps are the benchmark task's job.
+
+``evolve`` is the engine-growing surface: one warm-path loop run with the
+promotion loop wired (:mod:`evogine.swarm.promotion`) — gate evaluations are
+recorded as replayable runs, the reflector's proposed learning is queued
+against them and decided by the memory gate (promote on a material
+counterfactual flip, reject into the audit trail otherwise), and promoted
+knowledge is guarded against regression.  The store and run log live under
+``engine_root``; the report carries the loop report plus a ``promotion``
+block and both paths.
 
 Without a config file the run uses the deterministic scripted model and the
 Docker executor.  A YAML config (``--config``) may select:
@@ -42,15 +52,20 @@ from evogine.bench.harness import (
     ModelClient,
     ModelConfig,
     ModelResponse,
+    SwarmModelBridge,
     run,
+    to_swarm_task,
 )
 from evogine.bench.task import discover_case_ids, load_task
 from evogine.engine.store import Engine
+from evogine.gates.memory_gate import MemoryGate
+from evogine.gates.replay import RunLog
 from evogine.gates.sandbox import Executor, LocalSubprocessSandbox
 from evogine.swarm.gates_adapter import CodeGateAdapter
-from evogine.swarm.roles import AnthropicModel
+from evogine.swarm.promotion import BuilderApplier, PromotionWiring
+from evogine.swarm.roles import AnthropicModel, Builder
 from evogine.swarm.roles import ModelConfig as SwarmModelConfig
-from evogine.swarm.runner import serialize_candidate_files
+from evogine.swarm.runner import SwarmConfig, run_task, serialize_candidate_files
 
 #: The scripted verifier reply: consistent with a gate-rejected no-op repair.
 _VERIFIER_REPLY = (
@@ -219,6 +234,47 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_evolve(args: argparse.Namespace) -> int:
+    """Run one case warm with the promotion loop wired and print the JSON report."""
+    config = load_config(Path(args.config)) if args.config else CliConfig()
+    task = load_task(args.case)
+    engine = Engine(config.engine_root, actor="evogine-cli")
+    run_log = RunLog(Path(config.engine_root) / "runlog.jsonl")
+
+    model = SwarmModelBridge(_build_model(config, dict(task.baseline_files)))
+    builder = Builder(model, config.model_name, temperature=config.temperature)
+    executor = _executor(config.executor)
+    memory_gate = MemoryGate(run_log=run_log, applier=BuilderApplier(builder), executor=executor)
+    wiring = PromotionWiring(run_log=run_log, memory_gate=memory_gate)
+    gate = CodeGateAdapter(executor=executor)
+
+    swarm_config = SwarmConfig(
+        builder_model=config.model_name,
+        verifier_model=config.model_name,
+        reflector_model=config.model_name,
+        generations=config.generations,
+        candidates_per_generation=config.candidates_per_generation,
+        temperature=config.temperature,
+        retrieval_k=config.retrieval_k,
+        runs_dir=config.runs_dir,
+        # The engine-growing arm: evolve always retrieves through the store.
+        arm="warm",
+    )
+    report = run_task(to_swarm_task(task), engine, model, gate, swarm_config, promotion=wiring)
+    print(
+        json.dumps(
+            {
+                **report,
+                "engine_root": str(config.engine_root),
+                "run_log_path": str(run_log.path),
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
 def _cmd_case_list(args: argparse.Namespace) -> int:
     """Print the benchmark case ids, one per line."""
     for case_id in discover_case_ids():
@@ -263,6 +319,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--config", default=None, help="YAML config path")
     run_parser.set_defaults(func=_cmd_run)
+
+    evolve_parser = sub.add_parser(
+        "evolve", help="run one case warm with the promotion loop wired (engine grows)"
+    )
+    evolve_parser.add_argument("--case", required=True, help="benchmark case id")
+    evolve_parser.add_argument("--config", default=None, help="YAML config path")
+    evolve_parser.set_defaults(func=_cmd_evolve)
 
     case_parser = sub.add_parser("case", help="inspect the benchmark case corpus")
     case_sub = case_parser.add_subparsers(dest="case_command", required=True)

@@ -18,6 +18,13 @@ Per the v1 blueprint lifecycle (``art_bGBG4tqU``), one task run:
    the failure pattern from the recorded outcomes and its draft lands in the
    engine via ``Engine.propose`` — status ``ephemeral``, retrievable by nobody
    until the memory gate proves it.
+7. **Promotion (wired runs only)** — with explicit :class:`PromotionWiring`,
+   every gate evaluation is recorded as a replayable run, promoted knowledge
+   is guarded against regression (demoted when it stops earning confidence),
+   and the memory gate decides the proposed learning from counterfactual
+   replay evidence — promote, or reject into the audit trail. Without wiring
+   (the benchmark harness, always) the loop ends at the reflector exactly as
+   before; this is the engine-growing ``evogine evolve`` path.
 
 Every step appends a rollout record in the phase0 schema (plus
 ``reasoning_content`` and ``latency_ms``) to ``runs/rollouts.jsonl``. The
@@ -39,9 +46,16 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from evogine.engine.records import LearningRecord
+from evogine.swarm.promotion import (
+    PromotionReport,
+    PromotionWiring,
+    finish_promotion,
+    record_baseline_run,
+    record_candidate_run,
+)
 from evogine.swarm.roles import (
     Builder,
     ModelClient,
@@ -101,6 +115,10 @@ class GateOutcome:
     properties_passed: int
     properties_total: int
     ops: Mapping[str, int] = field(default_factory=dict)
+    # The code gate's rejecting stage ("tests"|"equivalence"|"baseline"),
+    # carried through to replay recording; ``None`` when the loop's gate
+    # seam does not surface it.
+    gate_stage: str | None = None
 
     @property
     def visible_failures(self) -> int:
@@ -174,6 +192,9 @@ class _CandidateResult:
     builder: RoleCall
     extracted: str
     outcome: GateOutcome
+    # The extracted candidate tree, kept for the promotion wiring's replay
+    # recording; ``None`` only for extraction failures (no re-evaluable input).
+    files: dict[str, str] | None
     verifier: RoleCall  # every candidate gets a review — never optional
     verifier_verdict: str = "unknown"
 
@@ -224,6 +245,9 @@ class LoopReport(TypedDict):
     retained: Literal["candidate", "baseline"]
     proposal: dict[str, object] | None
     rollouts_path: str
+    # Present only when the run was given promotion wiring (the engine-growing
+    # ``evogine evolve`` path) — the benchmark report contract stays unchanged.
+    promotion: NotRequired[PromotionReport]
 
 
 def run_task(
@@ -232,19 +256,32 @@ def run_task(
     model: ModelClient,
     gate: CandidateGate,
     config: SwarmConfig | None = None,
+    *,
+    promotion: PromotionWiring | None = None,
 ) -> LoopReport:
     """Run one task through the swarm loop and return a variance-aware report.
 
     The gate is a required argument — a loop without an objective authority
     must not exist. Every model-calling step is recorded to
     ``runs/rollouts.jsonl`` in the phase0 schema; the report summarizes the
-    baseline, candidates, retention, and any learning proposal.
+    baseline, candidates, retention, and any learning proposal. With
+    ``promotion`` wiring, gate evaluations are additionally recorded as
+    replayable runs and the proposed learning is decided by the memory gate
+    (see :mod:`evogine.swarm.promotion`); the report then carries a
+    ``promotion`` key. Without wiring, behavior is exactly the pre-wiring
+    loop.
     """
     config = config or SwarmConfig()
     writer = RolloutWriter(Path(config.runs_dir) / "rollouts.jsonl")
 
     # 1. Baseline: the never-worse bar.
     baseline_outcome = gate.evaluate(task.baseline_files, task)
+
+    # Promotion wiring (opt-in): the baseline evaluation becomes replay evidence.
+    recorded_run_ids: list[str] = []
+    if promotion is not None:
+        recorded_run_ids.append(record_baseline_run(promotion, task, config, baseline_outcome))
+
     writer.append(
         build_rollout(
             stage="baseline",
@@ -309,11 +346,30 @@ def run_task(
 
     for result in results:
         _write_candidate_records(writer, task, config, result)
+        if promotion is not None:
+            recorded = record_candidate_run(
+                promotion,
+                task,
+                config,
+                result.outcome,
+                result.files,
+                generation=result.generation,
+                candidate_index=result.candidate_index,
+            )
+            if recorded is not None:
+                recorded_run_ids.append(recorded)
 
     # 6. Reflector: on failure, diagnose and land the learning as ephemeral.
     proposal: dict[str, object] | None = None
     if best is None:
         proposal = _reflect(task, engine, reflector, baseline_outcome, results, config, writer)
+
+    # 7. Promotion (wired runs): guard promoted knowledge, decide the proposal.
+    promotion_report: PromotionReport | None = None
+    if promotion is not None:
+        promotion_report = finish_promotion(
+            promotion, engine, proposal, knowledge, recorded_run_ids
+        )
 
     baseline_report: BaselineReport = {
         "verdict": baseline_outcome.verdict,
@@ -341,7 +397,7 @@ def run_task(
             "properties_total": best.outcome.properties_total,
         }
     retained: Literal["candidate", "baseline"] = "candidate" if best is not None else "baseline"
-    return {
+    report: LoopReport = {
         "run_id": config.run_id,
         "case_id": task.case_id,
         "retrieved_records": len(knowledge),
@@ -353,6 +409,9 @@ def run_task(
         "proposal": proposal,
         "rollouts_path": str(writer.path),
     }
+    if promotion_report is not None:
+        report["promotion"] = promotion_report
+    return report
 
 
 def _generate_candidates(
@@ -376,7 +435,7 @@ def _generate_candidates(
         seed = derive_seed(config.run_id, task.case_id, generation, candidate_index)
         builder_call = builder.propose(task, knowledge, seed=seed)
         extracted = extract_code(builder_call.response.text)
-        outcome = _evaluate_reply(extracted, task, gate)
+        outcome, files = _evaluate_reply(extracted, task, gate)
         verifier_call = verifier.review(task, extracted, seed=seed)
         return _CandidateResult(
             generation=generation,
@@ -385,6 +444,7 @@ def _generate_candidates(
             builder=builder_call,
             extracted=extracted,
             outcome=outcome,
+            files=files,
             verifier=verifier_call,
             verifier_verdict=parse_verdict(verifier_call.response.text),
         )
@@ -399,20 +459,27 @@ def _generate_candidates(
         return [future.result() for future in futures]
 
 
-def _evaluate_reply(extracted: str, task: SwarmTask, gate: CandidateGate) -> GateOutcome:
+def _evaluate_reply(
+    extracted: str, task: SwarmTask, gate: CandidateGate
+) -> tuple[GateOutcome, dict[str, str] | None]:
     """Evaluate a builder reply; a reply that breaks extraction is a failing
-    candidate, not a loop crash."""
+    candidate, not a loop crash. The extracted files ride along for the
+    promotion wiring's replay recording — extraction failures never produced
+    any, so there is nothing to record for them."""
     try:
         files = extract_candidate_files(extracted, task.layout)
-        return gate.evaluate(files, task)
+        return gate.evaluate(files, task), files
     except Exception as exc:  # noqa: BLE001 — gate is a plugin seam; any failure is a recorded verdict
-        return GateOutcome(
-            verdict="fail",
-            failure_detail=f"extraction failed: {type(exc).__name__}: {exc}",
-            visible_passed=0,
-            visible_total=0,
-            properties_passed=0,
-            properties_total=0,
+        return (
+            GateOutcome(
+                verdict="fail",
+                failure_detail=f"extraction failed: {type(exc).__name__}: {exc}",
+                visible_passed=0,
+                visible_total=0,
+                properties_passed=0,
+                properties_total=0,
+            ),
+            None,
         )
 
 
