@@ -1,51 +1,63 @@
-"""Warm-versus-cold benchmark harness with variance-aware reporting.
+"""Warm-versus-cold benchmark harness wiring the REAL loop end to end.
 
-The harness runs each benchmark case twice — cold (retrieval suppressed:
-no engine knowledge reaches the builder) and warm (promoted knowledge
-retrieved for the task context) — under decay-pressure conditions such as
-concurrency, retries, time zones, locale, overflow, partial failure,
-integration drift, and load spikes. Hidden host-side invariants and
-oracle-leak protection live in the case definitions and the gate, not here.
+The harness runs each benchmark case once per selected arm — cold (retrieval
+suppressed: no engine knowledge reaches the builder) and warm (promoted
+knowledge retrieved for the task context) — by delegating every arm to the
+swarm task loop (:func:`evogine.swarm.runner.run_task`).  There is no separate
+inline generation/evaluation path anymore: the harness bridges the benchmark
+seams onto the loop and the loop does the work.
 
 Injection points, explicitly:
 
 - **Engine retrieval** — the ``engine`` argument serves the warm arm; the
   cold arm retrieves through :class:`NullEngine`, which is structurally
-  empty rather than a silent failure.
-- **Candidate generation** — ``config.builder`` behind the
-  :class:`ModelClient` interface; unit tests run a FakeModel, CI makes no
+  empty and lands no proposals rather than silently succeeding.  A warm arm
+  without an engine raises rather than degrading into a second cold arm.
+- **Candidate generation** — ``config.builder`` behind the benchmark
+  :class:`ModelClient` interface, bridged to the swarm roles' protocol
+  (:class:`SwarmModelBridge`); unit tests run scripted fakes and CI makes no
   API calls.
 - **Gate invocation** — the optional ``gate`` argument; the default
-  :class:`PropertiesGate` is the local stand-in for the sandboxed code gate.
+  :class:`~evogine.swarm.gates_adapter.CodeGateAdapter` routes every
+  candidate through the sandboxed code gate (pytest, oracle-leak scan,
+  differential equivalence, never-worse) with the Docker executor.  Pass a
+  local-executor adapter in trusted test runs.
 
-Retention is best-of-N with a never-worse fallback: a candidate is retained
-only if it passes the visible suite and scores at least as many hidden
-property rows as the degraded baseline; otherwise the baseline is kept.
-Every rollout — baseline and candidates alike — is appended to
-``runs/rollouts.jsonl`` in the phase0 schema.
+Every rollout — baseline, candidates, verifier reviews, reflector
+proposals — is appended to ``runs/rollouts.jsonl`` in the phase0 schema by
+the loop itself, tagged with the arm that produced it.
 
 Determinism follows the learn_0012 seed playbook: thinking off, temperature
-pinned, and a per-record seed ``sha256(run_id|case_id|generation|
-candidate_index)`` derived and recorded on every rollout. Arms of the same
-run share ``run_id``, so cold and warm candidates are seed-paired and only
-retrieval differs.
+pinned, and a per-record seed derived and recorded on every rollout.  Arms of
+the same run share ``run_id``, so cold and warm candidates at the same
+``(generation, candidate_index)`` are seed-paired and only retrieval differs.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol, TypedDict, cast
 
-from evogine.bench.gate import Gate, GateOutcome, PropertiesGate
-from evogine.bench.prompts import build_builder_messages
-from evogine.bench.rollouts import RolloutWriter, build_rollout
 from evogine.bench.task import BenchTask, load_task
 from evogine.engine.records import LearningRecord
+from evogine.swarm.gates_adapter import CodeGateAdapter
+from evogine.swarm.roles import ModelConfig as SwarmModelConfig
+from evogine.swarm.roles import ModelResponse as SwarmModelResponse
+from evogine.swarm.runner import (
+    BaselineReport,
+    CandidateGate,
+    EngineLike,
+    LoopReport,
+    SwarmConfig,
+    SwarmTask,
+    extract_candidate_files,  # noqa: F401 — re-exported
+    run_task,
+    serialize_candidate_files,  # noqa: F401 — re-exported
+)
 
 Arm = Literal["cold", "warm"]
 
@@ -56,9 +68,8 @@ PLAYBOOK = "learn_0012"
 def derive_seed(run_id: str, case_id: str, generation: int, candidate_index: int) -> str:
     """Derive the per-record seed (learn_0012): sha256 of the record identity.
 
-    Arms of one run share ``run_id``, so the cold and warm candidate at the
-    same ``(generation, candidate_index)`` are seed-paired — the comparison
-    isolates retrieval as the only difference.
+    Kept for benchmark-report callers; the loop derives and records the
+    per-record seed itself (a shorter digest of the same identity).
     """
     payload = f"{run_id}|{case_id}|{generation}|{candidate_index}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -85,7 +96,7 @@ class ModelResponse:
 
 class ModelClient(Protocol):
     """The builder seam: every model call goes through this interface, so unit
-    tests run a FakeModel and CI makes no API calls."""
+    tests run scripted fakes and CI makes no API calls."""
 
     def generate(
         self, *, messages: list[dict[str, str]], model_config: ModelConfig
@@ -98,11 +109,22 @@ class Retriever(Protocol):
     def retrieve(self, task_context: str, k: int = 5) -> list[LearningRecord]: ...
 
 
+class StorelessProposalError(RuntimeError):
+    """Raised when a proposal lands on an engine that backs no store."""
+
+
 class NullEngine:
-    """Cold-arm retrieval suppression: returns nothing and backs no store."""
+    """Cold-arm suppression: retrieves nothing and backs no proposal store.
+
+    ``propose`` raising is the honest behavior — the loop records the
+    reflector's draft as rejected instead of inventing a landing place.
+    """
 
     def retrieve(self, task_context: str, k: int = 5) -> list[LearningRecord]:
         return []
+
+    def propose(self, draft: LearningRecord | Mapping[str, Any]) -> LearningRecord:
+        raise StorelessProposalError("the cold arm backs no proposal store")
 
 
 @dataclass(frozen=True)
@@ -126,194 +148,173 @@ class HarnessConfig:
         )
 
 
-def extract_candidate_files(extracted_code: str, layout: str) -> dict[str, str]:
-    """Turn a builder reply into candidate-tree files.
+class SwarmModelBridge:
+    """Present the benchmark builder behind the swarm roles' ModelClient.
 
-    Single-file replies are the module source itself; package replies are a
-    ``{"files": {relative path: source}}`` JSON object whose paths are
-    normalized under ``candidate/``.
+    The bench protocol's reply carries the extracted candidate; the roles'
+    protocol wants the raw reply text their parsers consume.  Token accounting
+    flows through; ``max_tokens`` is the roles' sizing config and has no bench
+    counterpart to forward.
     """
-    if layout == "single":
-        return {"candidate.py": extracted_code}
-    if layout == "package":
-        payload = json.loads(extracted_code)
-        files = payload["files"]
-        if not isinstance(files, dict) or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in files.items()
-        ):
-            raise ValueError(
-                'multi-file reply must be {"files": {"<relative path>": "<source>"}}'
-            )
-        return {
-            key if key.startswith("candidate/") else f"candidate/{key}": value
-            for key, value in files.items()
-        }
-    raise ValueError(f"unknown case layout: {layout!r}")
+
+    def __init__(self, builder: ModelClient) -> None:
+        self._builder = builder
+
+    def generate(
+        self, *, messages: list[dict[str, str]], model_config: SwarmModelConfig
+    ) -> SwarmModelResponse:
+        response = self._builder.generate(
+            messages=messages,
+            model_config=ModelConfig(
+                model=model_config.model,
+                temperature=model_config.temperature,
+                thinking=model_config.thinking,
+                seed=model_config.seed,
+            ),
+        )
+        return SwarmModelResponse(
+            text=response.extracted_code,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+        )
 
 
-def serialize_candidate_files(files: Mapping[str, str]) -> str:
-    """Serialize candidate files for a rollout record's ``extracted_code``."""
-    if set(files) == {"candidate.py"}:
-        return files["candidate.py"]
-    return json.dumps({"files": dict(sorted(files.items()))})
+class _StorelessEngine:
+    """Retrieval-only EngineLike: proposals are recorded as unlandable."""
+
+    def __init__(self, retriever: Retriever) -> None:
+        self._retriever = retriever
+
+    def retrieve(self, task_context: str, k: int = 5) -> list[LearningRecord]:
+        return self._retriever.retrieve(task_context, k)
+
+    def propose(self, draft: LearningRecord | Mapping[str, Any]) -> LearningRecord:
+        raise StorelessProposalError(
+            "engine exposes retrieval only; the reflector's draft cannot land"
+        )
+
+
+def _engine_like(engine: Retriever) -> EngineLike:
+    """Adapt the harness's Retriever seam to the loop's EngineLike.
+
+    A real Engine (retrieve + propose) passes through unchanged; a
+    retrieval-only retriever is wrapped so a failed arm records its reflector
+    draft as unlandable rather than dropping it.
+    """
+    if callable(getattr(engine, "propose", None)):
+        # The runtime duck-check above is the test; the cast asserts it.
+        return cast(EngineLike, engine)
+    return _StorelessEngine(engine)
+
+
+def to_swarm_task(task: BenchTask) -> SwarmTask:
+    """Project the benchmark task onto the loop's SwarmTask (same fields)."""
+    return SwarmTask(
+        case_id=task.case_id,
+        description=task.description,
+        scenario_brief=task.scenario_brief,
+        baseline_files=dict(task.baseline_files),
+        decay_axis=task.decay_axis,
+        layout=task.layout,
+        suite_path=task.suite_path,
+        properties=dict(task.properties),
+        reference_files=dict(task.reference_files),
+    )
+
+
+def _swarm_config(config: HarnessConfig) -> SwarmConfig:
+    """Map the harness config onto the loop's; one model name for all roles."""
+    return SwarmConfig(
+        builder_model=config.model,
+        verifier_model=config.model,
+        reflector_model=config.model,
+        generations=config.generations,
+        candidates_per_generation=config.candidates_per_generation,
+        temperature=config.temperature,
+        thinking=config.thinking,
+        retrieval_k=config.retrieval_k,
+        runs_dir=Path(config.runs_dir),
+        run_id=config.run_id,
+    )
+
+
+class ArmReport(LoopReport):
+    """One arm's loop report, labeled with the arm that produced it."""
+
+    arm: str
+
+
+class BenchReport(TypedDict):
+    """Top-level benchmark report: paired arm reports over one case.
+
+    Serialized verbatim by the CLI's ``run`` command, so every key here is a
+    public contract of the benchmark.
+    """
+
+    run_id: str
+    case_id: str
+    decay_axis: str
+    baseline: BaselineReport
+    arms: dict[str, ArmReport]
+    rollouts_path: str
 
 
 def run(
     task: BenchTask,
     engine: Retriever | None,
     config: HarnessConfig,
-    gate: Gate | None = None,
-) -> dict[str, object]:
-    """Run one benchmark task cold and warm and return a variance-aware report.
+    gate: CandidateGate | None = None,
+) -> BenchReport:
+    """Run one benchmark task through the real loop, once per selected arm.
 
-    The report maps each arm to its candidate outcomes plus the retained
-    result, with the degraded baseline and every rollout recorded for audit.
-    A warm arm without an engine raises rather than silently degrading into
-    a second cold arm.
+    Each arm delegates to :func:`evogine.swarm.runner.run_task` — retrieval,
+    builder, verifier, the sandboxed code gate, retention, and the reflector
+    all run for real; rollouts land in the loop's phase0 file tagged with the
+    arm.  The report maps each arm to its loop report, with the degraded
+    baseline and the rollouts path surfaced at the top level.
     """
-    # Resolve each arm's retriever up front so the warm guard and the type
-    # narrowing live in one place: a warm arm without an engine raises here,
-    # and the loop never sees an Optional.
-    null_engine = NullEngine()
-    retrievers: dict[str, Retriever] = dict.fromkeys(config.arms, null_engine)
+    if not config.arms:
+        raise ValueError("harness config selects no arms")
+    swarm_task = to_swarm_task(task)
+    swarm_config = _swarm_config(config)
+    active_gate = gate if gate is not None else CodeGateAdapter()
+    model = SwarmModelBridge(config.builder)
+
+    # Resolve each arm's retriever up front so the warm guard lives in one
+    # place: a warm arm without an engine raises here, and the loop never
+    # sees an Optional.
+    retrievers: dict[str, Retriever] = dict.fromkeys(config.arms, NullEngine())
     if "warm" in retrievers:
         if engine is None:
-            raise ValueError(
-                "the warm arm requires an engine; pass one or drop 'warm' from arms"
-            )
+            raise ValueError("the warm arm requires an engine; pass one or drop 'warm' from arms")
         retrievers["warm"] = engine
-    gate = gate or PropertiesGate()
-    writer = RolloutWriter(Path(config.runs_dir) / "rollouts.jsonl")
 
-    baseline_outcome = gate.evaluate(task.baseline_files, task)
-    writer.append(
-        build_rollout(
-            stage="baseline",
-            case_id=task.case_id,
-            run_id=config.run_id,
-            generation=None,
-            candidate_index=None,
-            model="baseline",
-            config={"arm": "baseline", "seed": None, "playbook": PLAYBOOK},
-            prompt_messages=[],
-            extracted_code=serialize_candidate_files(task.baseline_files),
-            verdict=baseline_outcome.verdict,
-            failure_detail=baseline_outcome.failure_detail,
-            ops=baseline_outcome.ops,
-            tokens={"input_tokens": None, "output_tokens": None},
-        )
-    )
-
-    arms_report: dict[str, object] = {}
+    arms_report: dict[str, ArmReport] = {}
+    first: ArmReport | None = None
     for arm in config.arms:
-        retriever = retrievers[arm]
-        records = retriever.retrieve(_task_context(task), k=config.retrieval_k)
-        messages = build_builder_messages(task, records)
-        candidates: list[dict[str, object]] = []
-        best: dict[str, object] | None = None
-        best_key: tuple[int, int, int] | None = None
-        for generation in range(config.generations):
-            for candidate_index in range(config.candidates_per_generation):
-                seed = derive_seed(config.run_id, task.case_id, generation, candidate_index)
-                response = config.builder.generate(
-                    messages=messages, model_config=config.model_config(seed)
-                )
-                outcome = _evaluate_reply(response, task, gate)
-                writer.append(
-                    build_rollout(
-                        stage="candidate",
-                        case_id=task.case_id,
-                        run_id=config.run_id,
-                        generation=generation,
-                        candidate_index=candidate_index,
-                        model=config.model,
-                        config={
-                            "arm": arm,
-                            "seed": seed,
-                            "temperature": config.temperature,
-                            "thinking": config.thinking,
-                            "playbook": PLAYBOOK,
-                        },
-                        prompt_messages=messages,
-                        extracted_code=response.extracted_code,
-                        verdict=outcome.verdict,
-                        failure_detail=outcome.failure_detail,
-                        ops=outcome.ops,
-                        tokens={
-                            "input_tokens": response.input_tokens,
-                            "output_tokens": response.output_tokens,
-                        },
-                    )
-                )
-                eligible = (
-                    outcome.visible_failures == 0
-                    and outcome.properties_passed >= baseline_outcome.properties_passed
-                )
-                key = (outcome.properties_passed, -generation, -candidate_index)
-                if eligible and (best_key is None or key > best_key):
-                    best_key = key
-                    best = {
-                        "generation": generation,
-                        "candidate_index": candidate_index,
-                        "verdict": outcome.verdict,
-                        "properties_passed": outcome.properties_passed,
-                        "properties_total": outcome.properties_total,
-                    }
-                candidates.append(
-                    {
-                        "generation": generation,
-                        "candidate_index": candidate_index,
-                        "verdict": outcome.verdict,
-                        "properties_passed": outcome.properties_passed,
-                        "properties_total": outcome.properties_total,
-                    }
-                )
-        arms_report[arm] = {
-            "arm": arm,
-            "retrieved_records": len(records),
-            "candidates": candidates,
-            "best": best,
-            "retained": "candidate" if best is not None else "baseline",
-            "baseline_properties_passed": baseline_outcome.properties_passed,
-        }
+        report = run_task(
+            swarm_task,
+            _engine_like(retrievers[arm]),
+            model,
+            active_gate,
+            replace(swarm_config, arm=arm),
+        )
+        arms_report[arm] = {**report, "arm": arm}
+        if first is None:
+            first = arms_report[arm]
 
+    if first is None:  # pragma: no cover — arms non-empty is checked above
+        raise RuntimeError("unreachable: no arm reports were produced")
     return {
         "run_id": config.run_id,
         "case_id": task.case_id,
         "decay_axis": task.decay_axis,
-        "baseline": {
-            "verdict": baseline_outcome.verdict,
-            "visible_failures": baseline_outcome.visible_failures,
-            "properties_passed": baseline_outcome.properties_passed,
-            "properties_total": baseline_outcome.properties_total,
-        },
+        "baseline": first["baseline"],
         "arms": arms_report,
-        "rollouts_path": str(writer.path),
+        "rollouts_path": first["rollouts_path"],
     }
 
 
 def load_benchmark_case(case_id: str) -> BenchTask:
     """Load a case as a benchmark task (kept here so callers need one import)."""
     return load_task(case_id)
-
-
-def _evaluate_reply(response: ModelResponse, task: BenchTask, gate: Gate) -> GateOutcome:
-    """Evaluate a builder reply; a reply that breaks extraction is a failing
-    candidate, not a harness crash."""
-    try:
-        files = extract_candidate_files(response.extracted_code, task.layout)
-        return gate.evaluate(files, task)
-    except Exception as exc:
-        return GateOutcome(
-            verdict="fail",
-            failure_detail=f"extraction failed: {type(exc).__name__}: {exc}",
-            visible_passed=0,
-            visible_total=0,
-            properties_passed=0,
-            properties_total=0,
-        )
-
-
-def _task_context(task: BenchTask) -> str:
-    """The retrieval context a warm engine is queried with for this task."""
-    return f"{task.case_id} {task.decay_axis} {task.description}"

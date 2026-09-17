@@ -278,6 +278,15 @@ def test_compare_to_baseline_single_function_strictly_better():
     assert ok is False
 
 
+def test_compare_to_baseline_unmeasurable_baseline_vacuous_bar():
+    """An incumbent that crashed on the replay inputs cannot anchor the bar."""
+    ok, reason = compare_to_baseline("single-function", 12, None, equivalent=True)
+    assert ok is True and "unmeasurable" in reason
+    # The vacuous bar still requires equivalence: without it, fail closed.
+    ok, _ = compare_to_baseline("single-function", 12, None, equivalent=False)
+    assert ok is False
+
+
 def test_compare_to_baseline_multi_file_rides_on_equivalence():
     ok, _ = compare_to_baseline("multi-file", None, None, equivalent=True)
     assert ok is True

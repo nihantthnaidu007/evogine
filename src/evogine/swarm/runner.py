@@ -39,7 +39,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, TypedDict
 
 from evogine.engine.records import LearningRecord
 from evogine.swarm.roles import (
@@ -146,6 +146,9 @@ class SwarmConfig:
     temperature: float = 0.0  # learn_0012: temperature pinned
     thinking: bool = False  # learn_0012: thinking off
     retrieval_k: int = 5
+    # Which benchmark arm this loop run serves ("warm"|"cold"); recorded on
+    # every candidate/reflect rollout so paired arms are distinguishable.
+    arm: str = "warm"
     runs_dir: Path = Path("runs")
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
@@ -175,13 +178,61 @@ class _CandidateResult:
     verifier_verdict: str = "unknown"
 
 
+class BaselineReport(TypedDict):
+    """The degraded incumbent's gate outcome, as the loop reports it."""
+
+    verdict: str
+    visible_failures: int
+    properties_passed: int
+    properties_total: int
+
+
+class CandidateReport(TypedDict):
+    """One candidate's gate outcome, as the loop reports it."""
+
+    generation: int
+    candidate_index: int
+    verdict: str
+    properties_passed: int
+    properties_total: int
+    verifier_verdict: str
+
+
+class BestReport(TypedDict):
+    """The retained candidate's position and objective counts."""
+
+    generation: int
+    candidate_index: int
+    properties_passed: int
+    properties_total: int
+
+
+class LoopReport(TypedDict):
+    """Variance-aware summary returned by :func:`run_task`.
+
+    The report is serialized verbatim into the harness and CLI JSON output,
+    so every key here is a public contract of the loop.
+    """
+
+    run_id: str
+    case_id: str
+    retrieved_records: int
+    retrieved_ids: list[str]
+    baseline: BaselineReport
+    candidates: list[CandidateReport]
+    best: BestReport | None
+    retained: Literal["candidate", "baseline"]
+    proposal: dict[str, object] | None
+    rollouts_path: str
+
+
 def run_task(
     task: SwarmTask,
     engine: EngineLike,
     model: ModelClient,
     gate: CandidateGate,
     config: SwarmConfig | None = None,
-) -> dict[str, object]:
+) -> LoopReport:
     """Run one task through the swarm loop and return a variance-aware report.
 
     The gate is a required argument — a loop without an objective authority
@@ -264,39 +315,41 @@ def run_task(
     if best is None:
         proposal = _reflect(task, engine, reflector, baseline_outcome, results, config, writer)
 
+    baseline_report: BaselineReport = {
+        "verdict": baseline_outcome.verdict,
+        "visible_failures": baseline_outcome.visible_failures,
+        "properties_passed": baseline_outcome.properties_passed,
+        "properties_total": baseline_outcome.properties_total,
+    }
+    candidates_report: list[CandidateReport] = [
+        {
+            "generation": result.generation,
+            "candidate_index": result.candidate_index,
+            "verdict": result.outcome.verdict,
+            "properties_passed": result.outcome.properties_passed,
+            "properties_total": result.outcome.properties_total,
+            "verifier_verdict": result.verifier_verdict,
+        }
+        for result in results
+    ]
+    best_report: BestReport | None = None
+    if best is not None:
+        best_report = {
+            "generation": best.generation,
+            "candidate_index": best.candidate_index,
+            "properties_passed": best.outcome.properties_passed,
+            "properties_total": best.outcome.properties_total,
+        }
+    retained: Literal["candidate", "baseline"] = "candidate" if best is not None else "baseline"
     return {
         "run_id": config.run_id,
         "case_id": task.case_id,
         "retrieved_records": len(knowledge),
         "retrieved_ids": [record.id for record in knowledge],
-        "baseline": {
-            "verdict": baseline_outcome.verdict,
-            "visible_failures": baseline_outcome.visible_failures,
-            "properties_passed": baseline_outcome.properties_passed,
-            "properties_total": baseline_outcome.properties_total,
-        },
-        "candidates": [
-            {
-                "generation": result.generation,
-                "candidate_index": result.candidate_index,
-                "verdict": result.outcome.verdict,
-                "properties_passed": result.outcome.properties_passed,
-                "properties_total": result.outcome.properties_total,
-                "verifier_verdict": result.verifier_verdict,
-            }
-            for result in results
-        ],
-        "best": (
-            None
-            if best is None
-            else {
-                "generation": best.generation,
-                "candidate_index": best.candidate_index,
-                "properties_passed": best.outcome.properties_passed,
-                "properties_total": best.outcome.properties_total,
-            }
-        ),
-        "retained": "candidate" if best is not None else "baseline",
+        "baseline": baseline_report,
+        "candidates": candidates_report,
+        "best": best_report,
+        "retained": retained,
         "proposal": proposal,
         "rollouts_path": str(writer.path),
     }
@@ -368,7 +421,7 @@ def _write_candidate_records(
 ) -> None:
     """Append the builder and verifier rollout records for one candidate."""
     determinism = {
-        "arm": "warm",
+        "arm": config.arm,
         "seed": result.seed,
         "temperature": config.temperature,
         "thinking": config.thinking,
@@ -476,7 +529,7 @@ def _reflect(
         writer.append(
             build_rollout(
                 **base_fields,
-                config={"arm": "warm", "seed": None, "playbook": PLAYBOOK},
+                config={"arm": config.arm, "seed": None, "playbook": PLAYBOOK},
                 verdict="fail",
                 failure_detail=f"learning proposal rejected: {type(exc).__name__}: {exc}",
             )
@@ -486,7 +539,7 @@ def _reflect(
         build_rollout(
             **base_fields,
             config={
-                "arm": "warm",
+                "arm": config.arm,
                 "seed": None,
                 "playbook": PLAYBOOK,
                 "learning_id": record.id,

@@ -234,9 +234,11 @@ def compare_to_baseline(
 
     Single-function: displace the incumbent only on a STRICT ops improvement —
     equal is not better, and "nothing beats it" means the baseline is kept.
-    Multi-file: the objective score is public-API equivalence itself, already
-    enforced upstream; acceptance rides on it (ops comparison across files is
-    not defined in v1)."""
+    An incumbent whose measurement crashed on the replay inputs cannot anchor
+    the bar at all: the equivalent, measurable candidate dominates it and is
+    accepted.  Multi-file: the objective score is public-API equivalence
+    itself, already enforced upstream; acceptance rides on it (ops comparison
+    across files is not defined in v1)."""
     if scope == "multi-file":
         return equivalent, (
             "candidate is behaviorally equivalent at the public API"
@@ -247,6 +249,11 @@ def compare_to_baseline(
         return True, (
             f"candidate beats baseline on the objective score: {candidate_ops} < "
             f"{baseline_ops} bytecode-instruction ops"
+        )
+    if equivalent and candidate_ops is not None and baseline_ops is None:
+        return True, (
+            "baseline is unmeasurable on the replay inputs (it raised); the "
+            f"working candidate is accepted on equivalence with {candidate_ops} ops"
         )
     return False, (
         f"never-worse rejected: candidate ops {candidate_ops} does not beat "
@@ -285,10 +292,18 @@ class CodeGate:
         executor = self._executor if self._executor is not None else DockerSandbox()
         scope = gate_input.scope
 
-        # Stage 1: sandboxed pytest (when a suite is given).
+        # Stage 1: sandboxed pytest (when a suite is given). Multi-file units
+        # stage under candidate/ for the suite's `from candidate import ...`
+        # to resolve — the same convention the equivalence driver relies on
+        # (candidate_files keys are unprefixed unit paths).
         if gate_input.test_suite is not None:
+            suite_files = dict(gate_input.candidate_files)
+            if scope == "multi-file":
+                suite_files = {
+                    f"candidate/{name}": content for name, content in suite_files.items()
+                }
             res = executor.run(
-                {**gate_input.candidate_files, "test_suite.py": gate_input.test_suite},
+                {**suite_files, "test_suite.py": gate_input.test_suite},
                 _PYTEST_CMD,
                 timeout=timeout,
             )
@@ -359,6 +374,25 @@ class CodeGate:
                     executor,
                     timeout=timeout,
                 )
+            except verifier.VerifierTimeout as exc:
+                return self._reject(
+                    gate_input,
+                    GateVerdict.FAIL_TIMEOUT,
+                    "baseline",
+                    str(exc),
+                    candidate_ops=candidate_ops,
+                    baseline_ops=baseline_ops,
+                )
+            except verifier.VerifierError as exc:
+                return self._reject(
+                    gate_input,
+                    GateVerdict.FAIL_SANDBOX,
+                    "baseline",
+                    str(exc),
+                    candidate_ops=candidate_ops,
+                    baseline_ops=baseline_ops,
+                )
+            try:
                 baseline_ops = verifier.measure_ops(
                     gate_input.baseline_files["candidate.py"],
                     gate_input.entry_point,
@@ -366,6 +400,14 @@ class CodeGate:
                     executor,
                     timeout=timeout,
                 )
+            except verifier.VerifierCodeError:
+                # The incumbent crashed on the replay inputs — the very decay
+                # the benchmark measures (e.g. a degraded billing rule raising
+                # on month-end dates).  There is no measurable incumbent to be
+                # "not worse than", so the ops bar is vacuous: acceptance
+                # rides on the equivalence just proven.  Candidate-side or
+                # environment faults above stay fail-closed.
+                baseline_ops = None
             except verifier.VerifierTimeout as exc:
                 return self._reject(
                     gate_input,

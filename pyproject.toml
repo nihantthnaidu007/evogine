@@ -19,6 +19,7 @@ dev = [
     "pytest",
     "ruff",
     "mypy",
+    "types-PyYAML",
 ]
 
 [project.scripts]
@@ -40,11 +41,10 @@ extend-exclude = ["src/evogine/bench/cases"]
 testpaths = ["tests"]
 
 [tool.ruff.lint.per-file-ignores]
-# The bench gate and harness evaluate candidate/model output: any exception
-# raised there is a recorded outcome (a fail verdict), not a harness crash.
-# These boundary catches are the design, not lint slips.
+# The bench gate evaluates candidate/model output: any exception raised there
+# is a recorded outcome (a fail verdict), not a harness crash.  That boundary
+# catch is the design, not a lint slip.
 "src/evogine/bench/gate.py" = ["BLE001"]
-"src/evogine/bench/harness.py" = ["BLE001"]
 
 [tool.mypy]
 # Case corpus files shadow module names by design (each evaluates as a

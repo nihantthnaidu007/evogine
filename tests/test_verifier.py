@@ -129,3 +129,19 @@ def test_disclosure_is_present_and_explicit():
     disclosure = verifier.OPS_DISCLOSURE
     assert "bytecode" in disclosure.lower()
     assert "builtin" in disclosure.lower()
+
+
+# ------------------------------------------------------------ measured code
+
+
+def test_measured_code_crash_raises_verifier_code_error():
+    """The measured code raising is typed as VerifierCodeError — a property of
+    the code, not of the sandbox — so the gate can price the never-worse bar
+    honestly (an incumbent that crashes is decay, not an environment fault)."""
+    src = "def total(n):\n    raise ValueError('degraded')\n"
+    with pytest.raises(verifier.VerifierCodeError) as excinfo:
+        measure_ops(src, "total", CASES, LOCAL, timeout=5.0)
+    # The typed error stays inside the VerifierError family (fail-closed).
+    assert isinstance(excinfo.value, VerifierError)
+    assert not isinstance(excinfo.value, VerifierTimeout)
+    assert "ops measurement failed" in str(excinfo.value)

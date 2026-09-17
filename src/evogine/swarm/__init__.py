@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from evogine.swarm.gates_adapter import CodeGateAdapter
 from evogine.swarm.roles import (
     AnthropicModel,
     Builder,
@@ -37,6 +38,7 @@ __all__ = [
     "AnthropicModel",
     "Builder",
     "CandidateGate",
+    "CodeGateAdapter",
     "EngineLike",
     "GateOutcome",
     "ModelClient",

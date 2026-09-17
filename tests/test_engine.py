@@ -150,7 +150,8 @@ def test_promote_rejected_when_verdict_change_false(tmp_path: Path) -> None:
     assert engine.get(proposed.id).status == "ephemeral"
     rejections = engine.audit.find("promote-rejected", proposed.id)
     assert len(rejections) == 1
-    assert "no verdict change" in rejections[0].reason
+    reason = rejections[0].reason
+    assert reason is not None and "no verdict change" in reason
     assert any("reject-promotion" in subject for subject in git_subjects(engine))
 
 
@@ -160,7 +161,8 @@ def test_promote_rejected_below_materiality_threshold(tmp_path: Path) -> None:
     result = engine.promote(proposed.id, passing_evidence(runs=1))
     assert result.status == "ephemeral"
     rejection = engine.audit.find("promote-rejected", proposed.id)[0]
-    assert "materiality threshold" in rejection.reason
+    reason = rejection.reason
+    assert reason is not None and "materiality threshold" in reason
 
 
 def test_promote_rejection_returns_queued_record_to_ephemeral(tmp_path: Path) -> None:

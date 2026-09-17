@@ -74,13 +74,18 @@ from candidate.queue import JobQueue         # package
 
 ## Harness
 
-`bench/harness.py` exposes `run(task, engine, config)`. Injection points are
-explicit: retrieval (warm arm takes the `engine`; the cold arm retrieves via
-`NullEngine`), generation (`config.builder`, a `ModelClient` — CI uses
-FakeModel, no API calls), and evaluation (default `PropertiesGate`, the local
-stand-in for the sandboxed code gate). Candidates are kept best-of-N with a
-never-worse fallback to the degraded baseline. Every rollout — baseline and
-candidates — lands in `runs/rollouts.jsonl` in the phase0 schema (`stage`,
+`bench/harness.py` exposes `run(task, engine, config, gate=None)`. Each
+selected arm delegates to `evogine.swarm.runner.run_task` — the real loop end
+to end. Injection points are explicit: retrieval (the warm arm takes the
+`engine`; the cold arm retrieves via `NullEngine`), generation
+(`config.builder`, a benchmark `ModelClient` — CI uses scripted models, no
+API calls), and evaluation (`gate`, defaulting to `CodeGateAdapter`, which
+routes every candidate through the real sandboxed code gate). Retention is
+best-of-N with a never-worse fallback to the degraded baseline, decided
+inside the loop. The returned report pairs the arms: `arms` maps each arm
+label to its loop report (tagged with `arm`), with the first arm's baseline,
+`rollouts_path`, and run identity surfaced at the top level. Every rollout —
+baseline and candidates — lands in `runs/rollouts.jsonl` in the phase0 schema (`stage`,
 `case_id`, `run_id`, `generation`, `candidate_index`, `model`, `config`,
 `prompt_messages`, `extracted_code`, `verdict`, `failure_detail`, `ops`,
 `tokens`, `timestamp`).
