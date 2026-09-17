@@ -135,6 +135,46 @@ def test_gate_rejects_oracle_leak():
     assert res.returned_files == {"candidate.py": BASELINE_SRC}
 
 
+def test_oracle_leak_scan_covers_suite_less_cases():
+    """A suite-less single-function case with golden material is scanned.
+
+    GateInput permits test_suite=None with non-empty golden_cases (the
+    single_function classmethod requires a suite, but the dataclass — and the
+    replay's recorded-run reconstruction — do not). The old stage-2 guard
+    skipped the scan whenever test_suite was None, so exactly those cases had
+    NO scan of the candidate source. The scan keys on the golden outputs, not
+    the suite, so a leaky candidate must fail here too.
+    """
+    gate_input = GateInput(
+        scope="single-function",
+        baseline_files={"candidate.py": BASELINE_SRC},
+        candidate_files={"candidate.py": LEAKY_SRC},
+        entry_point="add",
+        test_suite=None,
+        golden_cases=GOLDEN_CASES,
+    )
+    res = GATE.evaluate(gate_input, timeout=3.0)
+    assert res.verdict is GateVerdict.FAIL_EQUIVALENCE
+    assert res.gate == "equivalence"
+    assert "oracle leak" in res.reason
+
+
+def test_suite_less_without_golden_material_vacuously_passes_scan():
+    """No golden material means no expected outputs to leak: the scan passes
+    vacuously and the pipeline continues (documented residual — there is no
+    oracle to defend; the never-worse stage still gates acceptance)."""
+    gate_input = GateInput(
+        scope="single-function",
+        baseline_files={"candidate.py": BASELINE_SRC},
+        candidate_files={"candidate.py": GOOD_SRC},
+        entry_point="add",
+        test_suite=None,
+        golden_cases=(),
+    )
+    res = GATE.evaluate(gate_input, timeout=3.0)
+    assert "oracle leak" not in res.reason
+
+
 def test_gate_rejects_divergent_candidate():
     res = _single(DIVERGENT_SRC)
     assert res.verdict is GateVerdict.FAIL_EQUIVALENCE

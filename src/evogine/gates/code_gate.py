@@ -311,8 +311,14 @@ class CodeGate:
                 verdict = _run_failure(res, GateVerdict.FAIL_TESTS)
                 return self._reject(gate_input, verdict, "tests", f"pytest: {_detail(res)}")
 
-        # Stage 2 (single-function): the host-side oracle-leak scan.
-        if scope == "single-function" and gate_input.test_suite is not None:
+        # Stage 2 (single-function): the host-side oracle-leak scan. It keys on
+        # the golden material, not the test suite: a suite-less single-function
+        # case that carries golden I/O is scanned exactly like a suite-bearing
+        # one (the previous guard skipped the scan whenever test_suite was
+        # None, leaving those candidates unscanned). A case with NO golden
+        # material has no expected outputs to leak — the scan vacuously passes
+        # (accepted residual; there is no oracle to defend).
+        if scope == "single-function" and gate_input.golden_cases:
             leak = find_oracle_leak(
                 gate_input.candidate_files["candidate.py"], gate_input.golden_cases
             )
