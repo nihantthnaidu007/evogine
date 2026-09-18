@@ -662,6 +662,7 @@ def write_results() -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point: run generation ladders or just analyze existing records."""
+    global RUNS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("scripted", "live"), default=None)
     parser.add_argument("--cases", default=None, help="comma-separated case ids (default: all)")
@@ -677,7 +678,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--analyze-only", action="store_true")
     args = parser.parse_args(argv)
 
-    global RUNS
     RUNS = REPO / "runs" / args.out
 
     RUNS.mkdir(parents=True, exist_ok=True)
