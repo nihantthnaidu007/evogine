@@ -1,0 +1,140 @@
+{
+  "manifest": {
+    "run_id": "be5e84c2b775",
+    "case_id": "billing-day-offset",
+    "generation": 2,
+    "repeat": 3,
+    "records": 20,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "warm_accepted": 0,
+    "cold_accepted": 0,
+    "degraded": "",
+    "seconds": 5.9
+  },
+  "report": {
+    "run_id": "be5e84c2b775",
+    "case_id": "billing-day-offset",
+    "decay_axis": "date-math",
+    "baseline": {
+      "verdict": "fail_equivalence",
+      "visible_failures": 1,
+      "properties_passed": 0,
+      "properties_total": 1
+    },
+    "arms": {
+      "cold": {
+        "run_id": "be5e84c2b775",
+        "case_id": "billing-day-offset",
+        "retrieved_records": 0,
+        "retrieved_ids": [],
+        "baseline": {
+          "verdict": "fail_equivalence",
+          "visible_failures": 1,
+          "properties_passed": 0,
+          "properties_total": 1
+        },
+        "candidates": [
+          {
+            "generation": 0,
+            "candidate_index": 0,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 1,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 2,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 3,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          }
+        ],
+        "best": null,
+        "retained": "baseline",
+        "proposal": null,
+        "rollouts_path": "rollout/rollouts.jsonl",
+        "arm": "cold"
+      },
+      "warm": {
+        "run_id": "be5e84c2b775",
+        "case_id": "billing-day-offset",
+        "retrieved_records": 5,
+        "retrieved_ids": [
+          "learn_0011",
+          "learn_0002",
+          "learn_0001",
+          "learn_0004",
+          "learn_0009"
+        ],
+        "baseline": {
+          "verdict": "fail_equivalence",
+          "visible_failures": 1,
+          "properties_passed": 0,
+          "properties_total": 1
+        },
+        "candidates": [
+          {
+            "generation": 0,
+            "candidate_index": 0,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 1,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 2,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 3,
+            "verdict": "fail_equivalence",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          }
+        ],
+        "best": null,
+        "retained": "baseline",
+        "proposal": {
+          "learning_id": "lr-20260918-c2000f4a",
+          "status": "ephemeral"
+        },
+        "rollouts_path": "rollout/rollouts.jsonl",
+        "arm": "warm"
+      }
+    },
+    "rollouts_path": "rollout/rollouts.jsonl"
+  }
+}

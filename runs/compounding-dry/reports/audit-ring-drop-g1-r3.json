@@ -1,0 +1,140 @@
+{
+  "manifest": {
+    "run_id": "d179a5605dbd",
+    "case_id": "audit-ring-drop",
+    "generation": 1,
+    "repeat": 3,
+    "records": 20,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "warm_accepted": 0,
+    "cold_accepted": 0,
+    "degraded": "",
+    "seconds": 6.0
+  },
+  "report": {
+    "run_id": "d179a5605dbd",
+    "case_id": "audit-ring-drop",
+    "decay_axis": "silent-data-corruption",
+    "baseline": {
+      "verdict": "pass_tests",
+      "visible_failures": 1,
+      "properties_passed": 0,
+      "properties_total": 1
+    },
+    "arms": {
+      "cold": {
+        "run_id": "d179a5605dbd",
+        "case_id": "audit-ring-drop",
+        "retrieved_records": 0,
+        "retrieved_ids": [],
+        "baseline": {
+          "verdict": "pass_tests",
+          "visible_failures": 1,
+          "properties_passed": 0,
+          "properties_total": 1
+        },
+        "candidates": [
+          {
+            "generation": 0,
+            "candidate_index": 0,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 1,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 2,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 3,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          }
+        ],
+        "best": null,
+        "retained": "baseline",
+        "proposal": null,
+        "rollouts_path": "rollout/rollouts.jsonl",
+        "arm": "cold"
+      },
+      "warm": {
+        "run_id": "d179a5605dbd",
+        "case_id": "audit-ring-drop",
+        "retrieved_records": 5,
+        "retrieved_ids": [
+          "learn_0002",
+          "learn_0009",
+          "learn_0011",
+          "learn_0001",
+          "learn_0004"
+        ],
+        "baseline": {
+          "verdict": "pass_tests",
+          "visible_failures": 1,
+          "properties_passed": 0,
+          "properties_total": 1
+        },
+        "candidates": [
+          {
+            "generation": 0,
+            "candidate_index": 0,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 1,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 2,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          },
+          {
+            "generation": 0,
+            "candidate_index": 3,
+            "verdict": "pass_tests",
+            "properties_passed": 0,
+            "properties_total": 1,
+            "verifier_verdict": "fail"
+          }
+        ],
+        "best": null,
+        "retained": "baseline",
+        "proposal": {
+          "learning_id": "lr-20260918-4538fe6d",
+          "status": "ephemeral"
+        },
+        "rollouts_path": "rollout/rollouts.jsonl",
+        "arm": "warm"
+      }
+    },
+    "rollouts_path": "rollout/rollouts.jsonl"
+  }
+}

@@ -1,0 +1,28 @@
+# Phase-3 compounding benchmark configuration (approved phase plan).
+#
+# Three cases x generation blocks x paired repeats; one both-arms CLI
+# invocation per repeat. The warm arm's engine persists across blocks per
+# case (the compounding lineage, bootstrapped from the seed pack); the cold
+# control is stateless per invocation. The driver rewrites runs_dir (the
+# per-invocation scratch), engine_root (the per-case lineage), and
+# model.provider (scripted dry-run vs live) per invocation.
+#
+# Case roles (phase-2 evidence, reports/CROSSCASE.md):
+#   drift-version-skew  discriminator — the one case with a proven strict
+#                       warm advantage (6/16 vs 2/16 accepted); full 4-repeat
+#                       noise floor retained.
+#   billing-day-offset  saturated control — warm tied at the ceiling (16/16).
+#                       Compounding must not manufacture regressions here.
+#   audit-ring-drop     floor control — warm tied at the floor (0/16, all
+#                       never-worse rejections). Exercises the memory gate's
+#                       promote-reject path live.
+runs_dir: runs/compounding
+engine_root: runs/compounding/engine
+executor: local
+model:
+  provider: anthropic
+  name: claude-sonnet-4-5
+generations: 1
+candidates_per_generation: 4
+temperature: 0.0
+retrieval_k: 5
