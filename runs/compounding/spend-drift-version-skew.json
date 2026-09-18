@@ -1,8 +1,8 @@
 {
-  "tokens_so_far": 338471,
-  "projected_total": 490471,
-  "invocations_done": 8,
-  "invocations_remaining": 4,
-  "passes_projected": 2,
+  "tokens_so_far": 497633,
+  "projected_total": 517633,
+  "invocations_done": 12,
+  "invocations_remaining": 0,
+  "passes_projected": 1,
   "stop_line": 520000.0
 }
