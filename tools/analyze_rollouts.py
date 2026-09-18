@@ -34,6 +34,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from evogine.swarm.determinism import derive_seed
+
 #: Candidate/verifier records must carry this determinism block (learn_0012).
 PLAYBOOK = "learn_0012"
 
@@ -122,17 +124,32 @@ def spend_by_stage(records: list[dict[str, Any]]) -> dict[str, dict[str, float]]
     return dict(summary)
 
 
-def determinism_coverage(records: list[dict[str, Any]]) -> tuple[int, int]:
-    """Count candidate/verifier records missing the learn_0012 block."""
-    checked = missing = 0
+def determinism_coverage(records: list[dict[str, Any]]) -> dict[str, int]:
+    """Verify the learn_0012 block on candidate/verifier records.
+
+    Beyond presence, the recorded seed must equal the canonical derivation
+    over the record identity — a present-but-wrong seed is exactly the
+    failure the determinism playbook exists to catch.
+    """
+    checked = missing = mismatched = 0
     for record in records:
         if record.get("stage") not in ("candidate", "verifier"):
             continue
         checked += 1
         config = record.get("config") or {}
-        if config.get("playbook") != PLAYBOOK or not config.get("seed"):
+        seed = config.get("seed")
+        if config.get("playbook") != PLAYBOOK or not seed:
             missing += 1
-    return checked, missing
+            continue
+        expected = derive_seed(
+            str(record.get("run_id")),
+            str(record.get("case_id")),
+            int(record.get("generation") or 0),
+            int(record.get("candidate_index") or 0),
+        )
+        if seed != expected:
+            mismatched += 1
+    return {"checked": checked, "missing": missing, "seed_mismatches": mismatched}
 
 
 def analyze(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -154,9 +171,18 @@ def analyze(records: list[dict[str, Any]]) -> dict[str, Any]:
                 if r.get("stage") == "candidate"
                 and (r.get("config") or {}).get("arm") == arm
             ]
+            # learn_0009: run-level outcome = accepted candidates per run_id;
+            # the median and its MAD floor come from repeats, never means.
+            per_run: dict[str, int] = defaultdict(int)
+            for r in arm_candidates:
+                per_run[str(r.get("run_id"))] += _accepted_bit(r)
+            outcomes = [per_run[run_id] for run_id in sorted(per_run)]
             case_report["arms"][arm] = {
                 "candidates": len(arm_candidates),
                 "accepted": sum(_accepted_bit(r) for r in arm_candidates),
+                "per_run_accepted": outcomes,
+                "median_outcome": median(outcomes) if outcomes else None,
+                "mad_floor": _median_abs_deviation([float(v) for v in outcomes]),
                 "never_worse_rejections": sum(_never_worse_rejection(r) for r in arm_candidates),
             }
         case_report["paired_deltas"] = deltas.get(case_id, {}).get("warm", [])
@@ -198,8 +224,8 @@ def main(argv: list[str] | None = None) -> int:
                             arm,
                             arm_report["candidates"],
                             arm_report["accepted"],
-                            arm_report["accepted"],
-                            "",
+                            arm_report["median_outcome"],
+                            arm_report["mad_floor"],
                             arm_report["never_worse_rejections"],
                             ";".join(str(d) for d in case_report["paired_deltas"]),
                         ]
