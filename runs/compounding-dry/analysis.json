@@ -1,0 +1,298 @@
+{
+  "determinism": {
+    "checked": 480,
+    "missing": 0,
+    "seed_mismatches": 0
+  },
+  "spend_by_stage": {
+    "baseline": {
+      "calls": 60,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "latency_ms": 0.0
+    },
+    "candidate": {
+      "calls": 240,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "latency_ms": 1.5717739806859754
+    },
+    "verifier": {
+      "calls": 240,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "latency_ms": 3.112953021627618
+    },
+    "reflector": {
+      "calls": 60,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "latency_ms": 0.5680439826392103
+    }
+  },
+  "cases": {
+    "audit-ring-drop": {
+      "arms": {
+        "cold": {
+          "candidates": 36,
+          "accepted": 0,
+          "per_run_accepted": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_outcome": 0,
+          "mad_floor": 0.0,
+          "never_worse_rejections": 36
+        },
+        "warm": {
+          "candidates": 36,
+          "accepted": 0,
+          "per_run_accepted": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_outcome": 0,
+          "mad_floor": 0.0,
+          "never_worse_rejections": 36
+        }
+      },
+      "paired_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "billing-day-offset": {
+      "arms": {
+        "cold": {
+          "candidates": 36,
+          "accepted": 0,
+          "per_run_accepted": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_outcome": 0,
+          "mad_floor": 0.0,
+          "never_worse_rejections": 0
+        },
+        "warm": {
+          "candidates": 36,
+          "accepted": 0,
+          "per_run_accepted": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_outcome": 0,
+          "mad_floor": 0.0,
+          "never_worse_rejections": 0
+        }
+      },
+      "paired_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "drift-version-skew": {
+      "arms": {
+        "cold": {
+          "candidates": 48,
+          "accepted": 0,
+          "per_run_accepted": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_outcome": 0.0,
+          "mad_floor": 0.0,
+          "never_worse_rejections": 0
+        },
+        "warm": {
+          "candidates": 48,
+          "accepted": 0,
+          "per_run_accepted": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_outcome": 0.0,
+          "mad_floor": 0.0,
+          "never_worse_rejections": 0
+        }
+      },
+      "paired_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "record_files": [
+    "rollouts.drift-version-skew.g1.jsonl",
+    "rollouts.drift-version-skew.g2.jsonl",
+    "rollouts.drift-version-skew.g3.jsonl",
+    "rollouts.billing-day-offset.g1.jsonl",
+    "rollouts.billing-day-offset.g2.jsonl",
+    "rollouts.billing-day-offset.g3.jsonl",
+    "rollouts.audit-ring-drop.g1.jsonl",
+    "rollouts.audit-ring-drop.g2.jsonl",
+    "rollouts.audit-ring-drop.g3.jsonl"
+  ]
+}
