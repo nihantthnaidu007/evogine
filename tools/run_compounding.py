@@ -700,8 +700,11 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"unknown case(s): {unknown}")
         selected = [CASES[name] for name in names]
 
+    # The run MODE names the budget discipline; the config's provider key
+    # speaks the CLI's vocabulary (scripted | anthropic).
+    provider = "anthropic" if args.mode == "live" else "scripted"
     for plan in selected:
-        run_case(plan, args.base_config, args.mode, args.resume, args.skip_final_pass)
+        run_case(plan, args.base_config, provider, args.resume, args.skip_final_pass)
     write_results()
     return 0
 
