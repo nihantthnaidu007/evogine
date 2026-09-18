@@ -30,7 +30,6 @@ from run_crosscase import RUNS, invocation_config
 #: Worker 1 hung on concurrency r4 with the counter-overflow-wrap shard
 #: never started, so the full missing set is eight invocations.
 PAIRS: list[tuple[str, int]] = [
-    ("concurrency-account-ledger", 4),
     ("partial-batch-write", 3),
     ("partial-batch-write", 4),
     ("unicode-nfkc-key", 4),
